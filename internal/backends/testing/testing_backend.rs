@@ -9,26 +9,31 @@ use i_slint_core::platform::PlatformError;
 use i_slint_core::renderer::{Renderer, RendererSealed};
 use i_slint_core::window::{InputMethodRequest, WindowAdapter, WindowAdapterInternal};
 
+use i_slint_core::items::TextWrap;
 use std::cell::{Cell, RefCell};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Mutex;
 
+#[derive(Default)]
+pub struct TestingBackendOptions {
+    pub mock_time: bool,
+    pub threading: bool,
+}
+
 pub struct TestingBackend {
     clipboard: Mutex<Option<String>>,
     queue: Option<Queue>,
+    mock_time: bool,
 }
 
 impl TestingBackend {
-    pub fn new() -> Self {
+    pub fn new(options: TestingBackendOptions) -> Self {
         Self {
-            queue: Some(Queue(Default::default(), std::thread::current())),
-            ..Self::new_no_thread()
+            clipboard: Mutex::default(),
+            queue: options.threading.then(|| Queue(Default::default(), std::thread::current())),
+            mock_time: options.mock_time,
         }
-    }
-
-    pub fn new_no_thread() -> Self {
-        Self { clipboard: Mutex::default(), queue: None }
     }
 }
 
@@ -45,8 +50,15 @@ impl i_slint_core::platform::Platform for TestingBackend {
     }
 
     fn duration_since_start(&self) -> core::time::Duration {
-        // The slint::testing::mock_elapsed_time updates the animation tick directly
-        core::time::Duration::from_millis(i_slint_core::animations::current_tick().0)
+        if self.mock_time {
+            // The slint::testing::mock_elapsed_time updates the animation tick directly
+            core::time::Duration::from_millis(i_slint_core::animations::current_tick().0)
+        } else {
+            static INITIAL_INSTANT: std::sync::OnceLock<std::time::Instant> =
+                std::sync::OnceLock::new();
+            let the_beginning = *INITIAL_INSTANT.get_or_init(std::time::Instant::now);
+            std::time::Instant::now() - the_beginning
+        }
     }
 
     fn set_clipboard_text(&self, text: &str, clipboard: i_slint_core::platform::Clipboard) {
@@ -71,10 +83,16 @@ impl i_slint_core::platform::Platform for TestingBackend {
 
         loop {
             let e = queue.0.lock().unwrap().pop_front();
+            if !self.mock_time {
+                i_slint_core::platform::update_timers_and_animations();
+            }
             match e {
                 Some(Event::Quit) => break Ok(()),
                 Some(Event::Event(e)) => e(),
-                None => std::thread::park(),
+                None => match i_slint_core::platform::duration_until_next_timer_update() {
+                    Some(duration) if !self.mock_time => std::thread::park_timeout(duration),
+                    _ => std::thread::park(),
+                },
             }
         }
     }
@@ -150,6 +168,7 @@ impl RendererSealed for TestingWindow {
         text: &str,
         _max_width: Option<LogicalLength>,
         _scale_factor: ScaleFactor,
+        _text_wrap: TextWrap,
     ) -> LogicalSize {
         LogicalSize::new(text.len() as f32 * 10., 10.)
     }

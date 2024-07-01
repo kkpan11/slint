@@ -141,7 +141,8 @@ fn builtin_structs(path: &Path) -> anyhow::Result<()> {
                 )*
                 $(
                     $(writeln!(file, "    ///{}", $pri_doc)?;)*
-                    let pri_type = match stringify!($pri_type) {
+                    let pri_type = stringify!($pri_type).replace(' ', "");
+                    let pri_type = match pri_type.as_str() {
                         "usize" => "uintptr_t",
                         "crate::animations::Instant" => "uint64_t",
                         // This shouldn't be accessed by the C++ anyway, just need to have the same ABI in a struct
@@ -533,6 +534,7 @@ fn gen_corelib(
             "slint_windowrc_set_logical_size",
             "slint_windowrc_set_physical_size",
             "slint_windowrc_color_scheme",
+            "slint_windowrc_default_font_size",
             "slint_windowrc_dispatch_pointer_event",
             "slint_windowrc_dispatch_key_event",
             "slint_windowrc_dispatch_event",

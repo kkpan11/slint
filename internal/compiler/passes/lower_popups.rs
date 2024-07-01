@@ -45,28 +45,13 @@ fn lower_popup_window(
     let parent_component = popup_window_element.borrow().enclosing_component.upgrade().unwrap();
     let parent_element = match parent_element {
         None => {
-            if parent_component.is_root_component.get() {
-                diag.push_error(
-                    "PopupWindow cannot be the top level".into(),
-                    &*popup_window_element.borrow(),
-                );
-                return;
-            }
             if matches!(popup_window_element.borrow().base_type, ElementType::Builtin(_)) {
                 popup_window_element.borrow_mut().base_type = window_type.clone();
             }
             parent_component.inherits_popup_window.set(true);
             return;
         }
-        Some(parent_element) => {
-            if crate::layout::is_layout(&parent_element.borrow().base_type) {
-                diag.push_warning(
-                    "PopupWindow shouldn't be a children of a layout".into(),
-                    &*popup_window_element.borrow(),
-                )
-            }
-            parent_element
-        }
+        Some(parent_element) => parent_element,
     };
 
     if Rc::ptr_eq(&parent_component.root_element, popup_window_element) {

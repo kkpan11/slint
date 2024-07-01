@@ -123,7 +123,7 @@ impl ChangeTracker {
         if !inner.is_null() {
             unsafe {
                 let drop = (*core::ptr::addr_of!((*inner).vtable)).drop;
-                drop(inner as *mut BindingHolder);
+                drop(inner);
             }
             self.inner.set(core::ptr::null_mut());
         }
@@ -134,7 +134,13 @@ impl ChangeTracker {
         CHANGED_NODES.with(|list| {
             let old_list = DependencyListHead::default();
             let old_list = core::pin::pin!(old_list);
+            let mut count = 0;
             while !list.is_empty() {
+                count += 1;
+                if count > 9 {
+                    crate::debug_log!("Slint: long changed callback chain detected");
+                    return;
+                }
                 DependencyListHead::swap(list.as_ref(), old_list.as_ref());
                 old_list.for_each(|node| {
                     let node = *node;

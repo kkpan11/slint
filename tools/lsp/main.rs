@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(clippy::await_holding_refcell_ref)]
 
 #[cfg(all(feature = "preview-engine", not(feature = "preview-builtin")))]
 compile_error!("Feature preview-engine and preview-builtin need to be enabled together when building native LSP");
@@ -306,9 +307,11 @@ fn main_loop(connection: Connection, init_param: InitializeParams, cli_args: Cli
     }));
 
     let ctx = Rc::new(Context {
-        document_cache: RefCell::new(DocumentCache::new(compiler_config)),
+        document_cache: RefCell::new(crate::common::DocumentCache::new(compiler_config)),
+        preview_config: RefCell::new(Default::default()),
         server_notifier,
         init_param,
+        #[cfg(any(feature = "preview-external", feature = "preview-engine"))]
         to_show: Default::default(),
     });
 
@@ -480,14 +483,6 @@ async fn handle_preview_to_lsp_message(
         }
         M::RequestState { .. } => {
             crate::language::request_state(ctx);
-        }
-        M::UpdateElement { label, position, properties } => {
-            let _ = send_workspace_edit(
-                ctx.server_notifier.clone(),
-                label,
-                properties::update_element_properties(ctx, position, properties),
-            )
-            .await;
         }
         M::SendWorkspaceEdit { label, edit } => {
             let _ = send_workspace_edit(ctx.server_notifier.clone(), label, Ok(edit)).await;

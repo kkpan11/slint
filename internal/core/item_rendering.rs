@@ -176,7 +176,7 @@ impl<T: Clone> ItemCache<T> {
 }
 
 /// Return true if the item might be a clipping item
-pub(crate) fn is_clipping_item(item: Pin<ItemRef>) -> bool {
+pub fn is_clipping_item(item: Pin<ItemRef>) -> bool {
     //(FIXME: there should be some flag in the vtable instead of down-casting)
     ItemRef::downcast_pin::<Flickable>(item).is_some()
         || ItemRef::downcast_pin::<Clip>(item).map_or(false, |clip_item| clip_item.as_ref().clip())
@@ -496,7 +496,6 @@ impl DirtyRegion {
         if self.count < Self::MAX_COUNT {
             self.rectangles[self.count] = b;
             self.count += 1;
-            return;
         } else {
             let best_merge = (0..self.count)
                 .map(|i| (i, self.rectangles[i].union(&b).area() - self.rectangles[i].area()))

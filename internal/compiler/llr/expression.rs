@@ -187,6 +187,8 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+
+    EmptyComponentFactory,
 }
 
 impl Expression {
@@ -194,7 +196,6 @@ impl Expression {
         Some(match ty {
             Type::Invalid
             | Type::Callback { .. }
-            | Type::ComponentFactory
             | Type::Function { .. }
             | Type::Void
             | Type::InferredProperty
@@ -241,6 +242,7 @@ impl Expression {
             Type::Enumeration(enumeration) => {
                 Expression::EnumerationValue(enumeration.clone().default_value())
             }
+            Type::ComponentFactory => Expression::EmptyComponentFactory,
         })
     }
 
@@ -301,6 +303,7 @@ impl Expression {
                 Type::Array(super::lower_expression::grid_layout_cell_data_ty().into())
             }
             Self::MinMax { ty, .. } => ty.clone(),
+            Self::EmptyComponentFactory => Type::ComponentFactory,
         }
     }
 }
@@ -382,6 +385,7 @@ macro_rules! visit_impl {
                 $visitor(lhs);
                 $visitor(rhs);
             }
+            Expression::EmptyComponentFactory => {}
         }
     };
 }
@@ -436,11 +440,9 @@ impl<'a, T> ParentCtx<'a, T> {
 
 #[derive(Clone)]
 pub struct EvaluationContext<'a, T = ()> {
-    pub public_component: &'a super::PublicComponent,
+    pub compilation_unit: &'a super::CompilationUnit,
     pub current_sub_component: Option<&'a super::SubComponent>,
     pub current_global: Option<&'a super::GlobalComponent>,
-    /// path to access the public_component (so one can access the globals).
-    /// e.g: `_self` in case we already are the root
     pub generator_state: T,
     /// The repeater parent
     pub parent: Option<ParentCtx<'a, T>>,
@@ -451,13 +453,13 @@ pub struct EvaluationContext<'a, T = ()> {
 
 impl<'a, T> EvaluationContext<'a, T> {
     pub fn new_sub_component(
-        public_component: &'a super::PublicComponent,
+        compilation_unit: &'a super::CompilationUnit,
         sub_component: &'a super::SubComponent,
         generator_state: T,
         parent: Option<ParentCtx<'a, T>>,
     ) -> Self {
         Self {
-            public_component,
+            compilation_unit,
             current_sub_component: Some(sub_component),
             current_global: None,
             generator_state,
@@ -467,12 +469,12 @@ impl<'a, T> EvaluationContext<'a, T> {
     }
 
     pub fn new_global(
-        public_component: &'a super::PublicComponent,
+        compilation_unit: &'a super::CompilationUnit,
         global: &'a super::GlobalComponent,
         generator_state: T,
     ) -> Self {
         Self {
-            public_component,
+            compilation_unit,
             current_sub_component: None,
             current_global: Some(global),
             generator_state,
@@ -573,7 +575,7 @@ impl<'a, T> EvaluationContext<'a, T> {
                 );
             }
             PropertyReference::Global { global_index, property_index } => {
-                let g = &self.public_component.globals[*global_index];
+                let g = &self.compilation_unit.globals[*global_index];
                 return PropertyInfoResult {
                     analysis: Some(&g.prop_analysis[*property_index]),
                     animation: None,
@@ -647,7 +649,7 @@ impl<'a, T> TypeResolutionContext for EvaluationContext<'a, T> {
                 ctx.property_ty(parent_reference)
             }
             PropertyReference::Global { global_index, property_index } => {
-                &self.public_component.globals[*global_index].properties[*property_index].ty
+                &self.compilation_unit.globals[*global_index].properties[*property_index].ty
             }
             PropertyReference::Function { sub_component_path, function_index } => {
                 if let Some(mut sub_component) = self.current_sub_component {
@@ -662,7 +664,7 @@ impl<'a, T> TypeResolutionContext for EvaluationContext<'a, T> {
                 }
             }
             PropertyReference::GlobalFunction { global_index, function_index } => {
-                &self.public_component.globals[*global_index].functions[*function_index].ret_ty
+                &self.compilation_unit.globals[*global_index].functions[*function_index].ret_ty
             }
         }
     }
@@ -790,12 +792,12 @@ impl ContextMap {
                     for i in path {
                         e = &e.sub_components[*i].ty;
                     }
-                    EvaluationContext::new_sub_component(ctx.public_component, e, (), None)
+                    EvaluationContext::new_sub_component(ctx.compilation_unit, e, (), None)
                 }
             }
             ContextMap::InGlobal(g) => EvaluationContext::new_global(
-                ctx.public_component,
-                &ctx.public_component.globals[*g],
+                ctx.compilation_unit,
+                &ctx.compilation_unit.globals[*g],
                 (),
             ),
         }

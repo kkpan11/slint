@@ -73,6 +73,7 @@ Use the following `accessible-` properties to make your items interact well with
 -   **`accessible-value-minimum`** (_in_ _float_): The minimum value of the item.
 -   **`accessible-value-step`** (_in_ _float_) The smallest increment or decrement by which the current value can change. This corresponds to the step by which a handle on a slider can be dragged.
 -   **`accessible-value`** (_in_ _string_): The current value of the item.
+-   **`accessible-placeholder-text`** (_in_ _string_): A placeholder text to use when the item's value is empty. Applies to text elements.
 
 You can also use the following callbacks that are going to be called by the accessibility framework:
 
@@ -878,4 +879,5 @@ or smaller. The initial width can be controlled with the `preferred-width` prope
 -   **`default-font-weight`** (_in_ _int_): The font weight to use as default in text elements inside this window, that don't have their `font-weight` property set. The values range from 100 (lightest) to 900 (thickest). 400 is the normal weight.
 -   **`icon`** (_in_ _image_): The window icon shown in the title bar or the task bar on window managers supporting it.
 -   **`no-frame`** (_in_ _bool_): Whether the window should be borderless/frameless or not.
+-   **`resize-border`** (_in_ _length_): Size of the resize border in borderless/frameless windows (winit only for now).
 -   **`title`** (_in_ _string_): The window title that is shown in the title bar.

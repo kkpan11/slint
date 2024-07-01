@@ -99,11 +99,10 @@ public:
         cbindgen_private::slint_windowrc_set_focus_item(&inner, &item_rc, set_focus);
     }
 
-    template<typename Component>
-    void set_component(const Component &c) const
+    void set_component(const cbindgen_private::ItemTreeWeak &weak) const
     {
-        auto self_rc = (*c.self_weak.lock()).into_dyn();
-        slint_windowrc_set_component(&inner, &self_rc);
+        auto item_tree_rc = (*weak.lock()).into_dyn();
+        slint_windowrc_set_component(&inner, &item_tree_rc);
     }
 
     template<typename Component, typename Parent>
@@ -219,6 +218,11 @@ public:
     inline void register_bitmap_font(const cbindgen_private::BitmapFont &font)
     {
         cbindgen_private::slint_register_bitmap_font(&inner, &font);
+    }
+
+    inline float default_font_size() const
+    {
+        return cbindgen_private::slint_windowrc_default_font_size(&inner);
     }
 
     /// \private

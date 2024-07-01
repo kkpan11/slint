@@ -6,7 +6,7 @@ use lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensResult,
 };
 
-use super::DocumentCache;
+use crate::common::DocumentCache;
 
 /// Give all the used types/modifier a number in an indexed array
 macro_rules! declare_legend {
@@ -30,8 +30,7 @@ pub fn get_semantic_tokens(
     document_cache: &mut DocumentCache,
     text_document: &lsp_types::TextDocumentIdentifier,
 ) -> Option<SemanticTokensResult> {
-    let filepath = super::uri_to_file(&text_document.uri)?;
-    let doc = document_cache.documents.get_document(&filepath)?;
+    let doc = document_cache.get_document(&text_document.uri)?;
     let doc_node = doc.node.as_ref()?;
     let mut token = doc_node.first_token()?;
     let mut data = vec![];
@@ -87,6 +86,7 @@ pub fn get_semantic_tokens(
                         }
                         SyntaxKind::StructDeclaration => Some((self::TYPE, 1 << self::DEFINITION)),
                         SyntaxKind::EnumDeclaration => Some((self::ENUM, 1 << self::DEFINITION)),
+                        SyntaxKind::PropertyChangedCallback => Some((self::PROPERTY, 0)),
                         _ => None,
                     }
                 }
@@ -133,6 +133,7 @@ pub fn get_semantic_tokens(
                 SyntaxKind::ObjectTypeMember => Some((self::PROPERTY, 1 << self::DEFINITION)),
                 SyntaxKind::StructDeclaration => Some((self::KEYWORD, 0)),
                 SyntaxKind::EnumDeclaration => Some((self::KEYWORD, 0)),
+                SyntaxKind::PropertyChangedCallback => Some((self::KEYWORD, 0)),
                 _ => None,
             },
             SyntaxKind::PlusEqual

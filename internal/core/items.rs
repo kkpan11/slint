@@ -1254,6 +1254,7 @@ pub struct WindowItem {
     pub background: Property<Brush>,
     pub title: Property<SharedString>,
     pub no_frame: Property<bool>,
+    pub resize_border: Property<LogicalLength>,
     pub always_on_top: Property<bool>,
     pub icon: Property<crate::graphics::Image>,
     pub default_font_family: Property<SharedString>,
@@ -1466,7 +1467,7 @@ declare_item_vtable! {
 macro_rules! declare_enums {
     ($( $(#[$enum_doc:meta])* enum $Name:ident { $( $(#[$value_doc:meta])* $Value:ident,)* })*) => {
         $(
-            #[derive(Copy, Clone, Debug, PartialEq, Eq, strum::EnumString, strum::Display, Hash)]
+            #[derive(Copy, Clone, Debug, PartialEq, Eq, strum::EnumString, strum::Display, strum::EnumIter, Hash)]
             #[repr(u32)]
             #[strum(serialize_all = "kebab-case")]
             $(#[$enum_doc])*

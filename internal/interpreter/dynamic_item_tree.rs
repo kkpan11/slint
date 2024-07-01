@@ -1,13 +1,14 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use crate::{api::Value, dynamic_type, eval};
-
+use crate::api::{CompilationResult, ComponentDefinition, Value};
+use crate::global_component::CompiledGlobalCollection;
+use crate::{dynamic_type, eval};
 use core::ptr::NonNull;
 use dynamic_type::{Instance, InstanceBox};
 use i_slint_compiler::diagnostics::SourceFileVersion;
 use i_slint_compiler::expression_tree::{Expression, NamedReference};
-use i_slint_compiler::langtype::{ElementType, Type};
+use i_slint_compiler::langtype::Type;
 use i_slint_compiler::object_tree::ElementRc;
 use i_slint_compiler::{diagnostics::BuildDiagnostics, object_tree::PropertyDeclaration};
 use i_slint_compiler::{generator, object_tree, parser, CompilerConfiguration};
@@ -117,8 +118,13 @@ impl RepeatedItemTree for ErasedItemTreeBox {
     fn update(&self, index: usize, data: Self::Data) {
         generativity::make_guard!(guard);
         let s = self.unerase(guard);
-        s.description.set_property(s.borrow(), SPECIAL_PROPERTY_INDEX, index.into()).unwrap();
-        s.description.set_property(s.borrow(), SPECIAL_PROPERTY_MODEL_DATA, data).unwrap();
+        let is_repeated = s.description.original.parent_element.upgrade().is_some_and(|p| {
+            p.borrow().repeated.as_ref().is_some_and(|r| !r.is_conditional_element)
+        });
+        if is_repeated {
+            s.description.set_property(s.borrow(), SPECIAL_PROPERTY_INDEX, index.into()).unwrap();
+            s.description.set_property(s.borrow(), SPECIAL_PROPERTY_MODEL_DATA, data).unwrap();
+        }
     }
 
     fn init(&self) {
@@ -267,7 +273,7 @@ impl ItemTree for ErasedItemTreeBox {
 
 i_slint_core::ItemTreeVTable_static!(static COMPONENT_BOX_VT for ErasedItemTreeBox);
 
-impl<'id> Drop for ErasedItemTreeBox {
+impl Drop for ErasedItemTreeBox {
     fn drop(&mut self) {
         generativity::make_guard!(guard);
         let unerase = self.unerase(guard);
@@ -291,8 +297,6 @@ pub(crate) struct ComponentExtraData {
     pub(crate) globals: OnceCell<crate::global_component::GlobalStorage>,
     pub(crate) self_weak: OnceCell<ErasedItemTreeBoxWeak>,
     pub(crate) embedding_position: OnceCell<(ItemTreeWeak, u32)>,
-    // resource id -> file path
-    pub(crate) embedded_file_resources: OnceCell<HashMap<usize, String>>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) canvas_id: OnceCell<String>,
 }
@@ -402,17 +406,19 @@ pub struct ItemTreeDescription<'id> {
         Vec<(NamedReference, Expression)>,
     )>,
 
-    /// compiled globals
-    compiled_globals: Vec<crate::global_component::CompiledGlobal>,
-    /// Map of all exported global singletons and their index in the compiled_globals vector. The key
-    /// is the normalized name of the global.
-    exported_globals_by_name: BTreeMap<String, usize>,
+    /// The collection of compiled globals
+    compiled_globals: Option<Rc<CompiledGlobalCollection>>,
 
     /// The type loader, which will be available only on the top-most `ItemTreeDescription`.
     /// All other `ItemTreeDescription`s have `None` here.
     #[cfg(feature = "highlight")]
     pub(crate) type_loader:
         std::cell::OnceCell<std::rc::Rc<i_slint_compiler::typeloader::TypeLoader>>,
+    /// The type loader, which will be available only on the top-most `ItemTreeDescription`.
+    /// All other `ItemTreeDescription`s have `None` here.
+    #[cfg(feature = "highlight")]
+    pub(crate) raw_type_loader:
+        std::cell::OnceCell<Option<std::rc::Rc<i_slint_compiler::typeloader::TypeLoader>>>,
 }
 
 fn internal_properties_to_public<'a>(
@@ -463,6 +469,9 @@ impl<'id> ItemTreeDescription<'id> {
     /// List names of exported global singletons
     pub fn global_names(&self) -> impl Iterator<Item = String> + '_ {
         self.compiled_globals
+            .as_ref()
+            .expect("Root component should have globals")
+            .compiled_globals
             .iter()
             .filter(|g| g.visible_in_public_api())
             .flat_map(|g| g.names().into_iter())
@@ -472,9 +481,10 @@ impl<'id> ItemTreeDescription<'id> {
         &self,
         name: &str,
     ) -> Option<impl Iterator<Item = (String, i_slint_compiler::langtype::Type)> + '_> {
-        self.exported_globals_by_name
+        let g = self.compiled_globals.as_ref().expect("Root component should have globals");
+        g.exported_globals_by_name
             .get(crate::normalize_identifier(name).as_ref())
-            .and_then(|global_idx| self.compiled_globals.get(*global_idx))
+            .and_then(|global_idx| g.compiled_globals.get(*global_idx))
             .map(|global| internal_properties_to_public(global.public_properties()))
     }
 
@@ -800,56 +810,72 @@ pub async fn load(
     source: String,
     path: std::path::PathBuf,
     version: SourceFileVersion,
-    #[allow(unused_mut)] mut compiler_config: CompilerConfiguration,
-    guard: generativity::Guard<'_>,
-) -> (Result<Rc<ItemTreeDescription<'_>>, ()>, i_slint_compiler::diagnostics::BuildDiagnostics) {
-    // If the native style should be Qt, resolve it here as we have the knowledge of the native style
-    #[cfg(all(unix, not(target_os = "macos")))]
-    if i_slint_backend_selector::HAS_NATIVE_STYLE {
-        let is_native = match &compiler_config.style {
-            Some(s) => s == "native",
-            None => std::env::var("SLINT_STYLE").map_or(true, |s| s == "native"),
-        };
-        if is_native {
-            compiler_config.style = Some("qt".into());
-        }
+    mut compiler_config: CompilerConfiguration,
+) -> CompilationResult {
+    // If the native style should be Qt, resolve it here as we know that we have it
+    let is_native = match &compiler_config.style {
+        Some(s) => s == "native",
+        None => std::env::var("SLINT_STYLE").map_or(true, |s| s == "native"),
+    };
+    if is_native {
+        compiler_config.style = Some(
+            i_slint_common::get_native_style(i_slint_backend_selector::HAS_NATIVE_STYLE, "")
+                .to_string(),
+        );
     }
 
     let diag = BuildDiagnostics::default();
+    #[cfg(feature = "highlight")]
+    let (path, mut diag, loader, raw_type_loader) =
+        i_slint_compiler::load_root_file_with_raw_type_loader(
+            &path,
+            version,
+            &path,
+            source,
+            diag,
+            compiler_config,
+        )
+        .await;
+    #[cfg(not(feature = "highlight"))]
     let (path, mut diag, loader) =
         i_slint_compiler::load_root_file(&path, version, &path, source, diag, compiler_config)
             .await;
     if diag.has_error() {
-        return (Err(()), diag);
+        return CompilationResult { components: HashMap::new(), diagnostics: diag };
     }
 
-    let item_tree = {
+    #[cfg(feature = "highlight")]
+    let loader = Rc::new(loader);
+    #[cfg(feature = "highlight")]
+    let raw_type_loader = raw_type_loader.map(Rc::new);
+
+    let doc = loader.get_document(&path).unwrap();
+
+    let compiled_globals = Rc::new(CompiledGlobalCollection::compile(doc));
+    let mut components = HashMap::new();
+
+    for c in doc.exported_roots() {
+        generativity::make_guard!(guard);
         #[allow(unused_mut)]
-        let mut it = {
-            let doc = loader.get_document(&path).unwrap();
-            if matches!(
-                doc.root_component.root_element.borrow().base_type,
-                ElementType::Global | ElementType::Error
-            ) {
-                diag.push_error_with_span("No component found".into(), Default::default());
-                return (Err(()), diag);
-            }
-
-            generate_item_tree(&doc.root_component, guard)
-        };
-
+        let mut it = generate_item_tree(&c, Some(compiled_globals.clone()), guard);
         #[cfg(feature = "highlight")]
         {
-            let _ = it.type_loader.set(Rc::new(loader));
+            let _ = it.type_loader.set(loader.clone());
+            let _ = it.raw_type_loader.set(raw_type_loader.clone());
         }
-        it
+        components.insert(c.id.clone(), ComponentDefinition { inner: it.into() });
+    }
+
+    if components.is_empty() {
+        diag.push_error_with_span("No component found".into(), Default::default());
     };
 
-    (Ok(item_tree), diag)
+    CompilationResult { diagnostics: diag, components }
 }
 
 pub(crate) fn generate_item_tree<'id>(
     component: &Rc<object_tree::Component>,
+    compiled_globals: Option<Rc<CompiledGlobalCollection>>,
     guard: generativity::Guard<'id>,
 ) -> Rc<ItemTreeDescription<'id>> {
     //dbg!(&*component.root_element.borrow());
@@ -932,7 +958,7 @@ pub(crate) fn generate_item_tree<'id>(
             generativity::make_guard!(guard);
             self.repeater.push(
                 RepeaterWithinItemTree {
-                    item_tree_to_repeat: generate_item_tree(base_component, guard),
+                    item_tree_to_repeat: generate_item_tree(base_component, None, guard),
                     offset: self.type_builder.add_field_type::<Repeater<ErasedItemTreeBox>>(),
                     model: item.repeated.as_ref().unwrap().model.clone(),
                 }
@@ -1057,11 +1083,10 @@ pub(crate) fn generate_item_tree<'id>(
         )
     }
 
-    for (name, decl) in &component.root_element.borrow().property_declarations {
-        if decl.is_alias.is_some() {
-            continue;
-        }
-        let (prop, type_info) = match &decl.property_type {
+    fn property_info_for_type(
+        ty: &Type,
+    ) -> Option<(Box<dyn PropertyInfo<u8, Value>>, dynamic_type::StaticTypeInfo)> {
+        Some(match ty {
             Type::Float32 => animated_property_info::<f32>(),
             Type::Int32 => animated_property_info::<i32>(),
             Type::String => property_info::<SharedString>(),
@@ -1074,11 +1099,6 @@ pub(crate) fn generate_item_tree<'id>(
             Type::Rem => animated_property_info::<f32>(),
             Type::Image => property_info::<i_slint_core::graphics::Image>(),
             Type::Bool => property_info::<bool>(),
-            Type::Callback { .. } => {
-                custom_callbacks
-                    .insert(name.clone(), builder.type_builder.add_field_type::<Callback>());
-                continue;
-            }
             Type::ComponentFactory => property_info::<ComponentFactory>(),
             Type::Struct { name: Some(name), .. } if name.ends_with("::StateInfo") => {
                 property_info::<i_slint_core::properties::StateInfo>()
@@ -1105,7 +1125,7 @@ pub(crate) fn generate_item_tree<'id>(
                 }
             }
             Type::LayoutCache => property_info::<SharedVector<f32>>(),
-            Type::Function { .. } => continue,
+            Type::Function { .. } | Type::Callback { .. } => return None,
 
             // These can't be used in properties
             Type::Invalid
@@ -1115,25 +1135,51 @@ pub(crate) fn generate_item_tree<'id>(
             | Type::Model
             | Type::PathData
             | Type::UnitProduct(_)
-            | Type::ElementReference => panic!("bad type {:?}", &decl.property_type),
-        };
+            | Type::ElementReference => panic!("bad type {:?}", ty),
+        })
+    }
+
+    for (name, decl) in &component.root_element.borrow().property_declarations {
+        if decl.is_alias.is_some() {
+            continue;
+        }
+        if matches!(&decl.property_type, Type::Callback { .. }) {
+            custom_callbacks
+                .insert(name.clone(), builder.type_builder.add_field_type::<Callback>());
+            continue;
+        }
+        let Some((prop, type_info)) = property_info_for_type(&decl.property_type) else { continue };
         custom_properties.insert(
             name.clone(),
             PropertiesWithinComponent { offset: builder.type_builder.add_field(type_info), prop },
         );
     }
-    if component.parent_element.upgrade().is_some() {
-        let (prop, type_info) = property_info::<u32>();
-        custom_properties.insert(
-            SPECIAL_PROPERTY_INDEX.into(),
-            PropertiesWithinComponent { offset: builder.type_builder.add_field(type_info), prop },
-        );
-        // FIXME: make it a property for the correct type instead of being generic
-        let (prop, type_info) = property_info::<Value>();
-        custom_properties.insert(
-            SPECIAL_PROPERTY_MODEL_DATA.into(),
-            PropertiesWithinComponent { offset: builder.type_builder.add_field(type_info), prop },
-        );
+    if let Some(parent_element) = component.parent_element.upgrade() {
+        if let Some(r) = &parent_element.borrow().repeated {
+            if !r.is_conditional_element {
+                let (prop, type_info) = property_info::<u32>();
+                custom_properties.insert(
+                    SPECIAL_PROPERTY_INDEX.into(),
+                    PropertiesWithinComponent {
+                        offset: builder.type_builder.add_field(type_info),
+                        prop,
+                    },
+                );
+
+                let model_ty = Expression::RepeaterModelReference {
+                    element: component.parent_element.clone(),
+                }
+                .ty();
+                let (prop, type_info) = property_info_for_type(&model_ty).unwrap();
+                custom_properties.insert(
+                    SPECIAL_PROPERTY_MODEL_DATA.into(),
+                    PropertiesWithinComponent {
+                        offset: builder.type_builder.add_field(type_info),
+                        prop,
+                    },
+                );
+            }
+        }
     }
 
     let parent_item_tree_offset = if component.parent_element.upgrade().is_some() {
@@ -1156,35 +1202,6 @@ pub(crate) fn generate_item_tree<'id>(
     });
 
     let public_properties = component.root_element.borrow().property_declarations.clone();
-
-    let mut exported_globals_by_name: BTreeMap<String, usize> = Default::default();
-
-    let compiled_globals = component
-        .used_types
-        .borrow()
-        .globals
-        .iter()
-        .enumerate()
-        .map(|(index, component)| {
-            let mut global = crate::global_component::generate(component);
-
-            if component.visible_in_public_api() {
-                global.extend_public_properties(
-                    component.root_element.borrow().property_declarations.clone(),
-                );
-
-                exported_globals_by_name.extend(
-                    component
-                        .exported_global_names
-                        .borrow()
-                        .iter()
-                        .map(|exported_name| (exported_name.name.clone(), index)),
-                )
-            }
-
-            global
-        })
-        .collect();
 
     let t = ItemTreeVTable {
         visit_children_item,
@@ -1224,10 +1241,11 @@ pub(crate) fn generate_item_tree<'id>(
         extra_data_offset,
         public_properties,
         compiled_globals,
-        exported_globals_by_name,
         change_trackers,
         #[cfg(feature = "highlight")]
         type_loader: std::cell::OnceCell::new(),
+        #[cfg(feature = "highlight")]
+        raw_type_loader: std::cell::OnceCell::new(),
     };
 
     Rc::new(t)
@@ -1379,25 +1397,13 @@ pub fn instantiate(
             .ok()
             .unwrap();
     } else {
-        for g in &description.compiled_globals {
-            crate::global_component::instantiate(g, &mut globals, self_weak.clone());
+        if let Some(g) = description.compiled_globals.as_ref() {
+            for g in g.compiled_globals.iter() {
+                crate::global_component::instantiate(g, &mut globals, self_weak.clone());
+            }
         }
         let extra_data = description.extra_data_offset.apply(instance_ref.as_ref());
         extra_data.globals.set(globals).ok().unwrap();
-
-        extra_data
-            .embedded_file_resources
-            .set(
-                description
-                    .original
-                    .embedded_file_resources
-                    .borrow()
-                    .iter()
-                    .map(|(path, er)| (er.id, path.clone()))
-                    .collect(),
-            )
-            .ok()
-            .unwrap();
 
         #[cfg(target_arch = "wasm32")]
         if let Some(WindowOptions::CreateWithCanvasId(canvas_id)) = window_options {
@@ -1405,16 +1411,13 @@ pub fn instantiate(
         }
     }
 
-    match &window_options {
-        Some(WindowOptions::UseExistingWindow(existing_adapter)) => {
-            description
-                .window_adapter_offset
-                .apply(instance_ref.as_ref())
-                .set(existing_adapter.clone())
-                .ok()
-                .unwrap();
-        }
-        _ => {}
+    if let Some(WindowOptions::UseExistingWindow(existing_adapter)) = &window_options {
+        description
+            .window_adapter_offset
+            .apply(instance_ref.as_ref())
+            .set(existing_adapter.clone())
+            .ok()
+            .unwrap();
     }
 
     // Some properties are generated as Value, but for which the default constructed Value must be initialized
@@ -1915,6 +1918,8 @@ extern "C" fn item_geometry(component: ItemTreeRefPin, item_index: u32) -> Logic
     }
 }
 
+// silence the warning despite `AccessibleRole` is a `#[non_exhaustive]` enum from another crate.
+#[allow(improper_ctypes_definitions)]
 extern "C" fn accessible_role(component: ItemTreeRefPin, item_index: u32) -> AccessibleRole {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
@@ -2233,7 +2238,7 @@ pub fn show_popup(
 ) {
     generativity::make_guard!(guard);
     // FIXME: we should compile once and keep the cached compiled component
-    let compiled = generate_item_tree(&popup.component, guard);
+    let compiled = generate_item_tree(&popup.component, None, guard);
     let inst = instantiate(
         compiled,
         Some(parent_comp),

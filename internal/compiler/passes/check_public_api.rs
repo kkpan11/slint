@@ -7,9 +7,46 @@ use std::rc::Rc;
 
 use crate::diagnostics::{BuildDiagnostics, DiagnosticLevel};
 use crate::object_tree::{Component, Document, PropertyVisibility};
+use crate::CompilerConfiguration;
+use itertools::Either;
 
-pub fn check_public_api(doc: &Document, diag: &mut BuildDiagnostics) {
-    check_public_api_component(&doc.root_component, diag);
+pub fn check_public_api(
+    doc: &mut Document,
+    config: &CompilerConfiguration,
+    diag: &mut BuildDiagnostics,
+) {
+    let last = doc.last_exported_component();
+
+    if config.generate_all_exported_windows {
+        doc.exports.retain(|export| {
+            // Warn about exported non-window (and remove them from the export unless it's the last for compatibility)
+            if let Either::Left(c) = &export.1 {
+                if !c.is_global() && !super::ensure_window::inherits_window(c) {
+                    let is_last = last.as_ref().is_some_and(|last| !Rc::ptr_eq(last, c));
+                    if is_last {
+                        diag.push_warning(format!("Exported component '{}' doesn't inherit Window. No code will be generated for it", export.0.name), &export.0.name_ident);
+                        return false;
+                    } else {
+                        diag.push_warning(format!("Exported component '{}' doesn't inherit Window. This is deprecated", export.0.name), &export.0.name_ident);
+                    }
+                }
+            }
+            true
+        });
+    } else {
+        // Only keep the last component if there is one
+        doc.exports.retain(|export| {
+            if let Either::Left(c) = &export.1 {
+                c.is_global() || last.as_ref().map_or(true, |last| Rc::ptr_eq(last, c))
+            } else {
+                true
+            }
+        });
+    }
+
+    for c in doc.exported_roots() {
+        check_public_api_component(&c, diag);
+    }
     for (export_name, e) in &*doc.exports {
         if let Some(c) = e.as_ref().left() {
             if c.is_global() {

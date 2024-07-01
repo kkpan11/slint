@@ -1,7 +1,10 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use i_slint_compiler::diagnostics::SourceFile;
+use std::cell::RefCell;
+use std::num::NonZeroUsize;
+
+use i_slint_compiler::diagnostics::{BuildDiagnostics, SourceFile};
 use i_slint_compiler::parser::{syntax_nodes, SyntaxKind, SyntaxNode};
 use i_slint_core::lengths::{LogicalPoint, LogicalRect, LogicalSize};
 use slint_interpreter::ComponentInstance;
@@ -19,7 +22,7 @@ use crate::wasm_prelude::*;
 pub fn placeholder() -> String {
     format!(
         " Rectangle {{ min-width: 16px; min-height: 16px; /* {} */ }}",
-        preview::NODE_IGNORE_COMMENT
+        common::NODE_IGNORE_COMMENT
     )
 }
 
@@ -430,6 +433,153 @@ fn insert_position_before_child(
     })
 }
 
+/// Insert before the first component (exported or not) or at the very end of the document if no
+/// Component is found.
+fn insert_position_before_first_component(
+    document: &syntax_nodes::Document,
+) -> Option<InsertInformation> {
+    let url = {
+        let url = lsp_types::Url::from_file_path(document.source_file.path()).ok()?;
+        let version = document.source_file.version();
+        common::VersionedUrl::new(url, version)
+    };
+
+    let first_component: Option<SyntaxNode> = document.Component().next().map(|c| c.into());
+    let first_exported_component: Option<SyntaxNode> =
+        document.ExportsList().find(|el| el.Component().is_some()).map(|el| el.into());
+
+    let first_component_node = if first_component
+        .as_ref()
+        .map(|sn| u32::from(sn.text_range().start()))
+        .unwrap_or(u32::MAX)
+        < first_exported_component
+            .as_ref()
+            .map(|sn| u32::from(sn.text_range().start()))
+            .unwrap_or(u32::MAX)
+    {
+        first_component
+    } else {
+        first_exported_component
+    };
+
+    fn find_pre_indent_and_replacement(
+        token: &rowan::SyntaxToken<i_slint_compiler::parser::Language>,
+    ) -> (String, u32) {
+        match token.kind() {
+            SyntaxKind::Whitespace => {
+                if token.prev_token().is_some() {
+                    let nl_count = token.text().chars().filter(|c| c == &'\n').count();
+                    let replacement_range =
+                        token.text().split('\n').last().map(|s| s.as_bytes().len()).unwrap_or(0)
+                            as u32;
+
+                    if nl_count >= 2 {
+                        (String::new(), replacement_range)
+                    } else if nl_count == 1 {
+                        ("\n".to_string(), replacement_range)
+                    } else {
+                        ("\n\n".to_string(), replacement_range)
+                    }
+                } else {
+                    (String::new(), token.text().as_bytes().len() as u32) // Just WS before the component: Replace!
+                }
+            }
+            _ => ("\n\n".to_string(), 0),
+        }
+    }
+
+    if let Some(component) = first_component_node {
+        // have a component node!
+        let first_token = component.first_token()?;
+        let first_token_offset = u32::from(first_token.text_range().start());
+        if let Some(before_first_token) = first_token.prev_token() {
+            let (pre_indent, replacement_range) =
+                find_pre_indent_and_replacement(&before_first_token);
+
+            Some(InsertInformation {
+                insertion_position: common::VersionedPosition::new(
+                    url,
+                    first_token_offset - replacement_range,
+                ),
+                replacement_range,
+                pre_indent,
+                indent: "    ".to_string(),
+                post_indent: "\n\n".to_string(),
+            })
+        } else {
+            // Component is the first thing in the file!
+            Some(InsertInformation {
+                insertion_position: common::VersionedPosition::new(url, first_token_offset),
+                replacement_range: 0,
+                pre_indent: String::new(),
+                indent: "     ".to_string(),
+                post_indent: "\n\n".to_string(),
+            })
+        }
+    } else if let Some(last_token) = document.last_token().unwrap().prev_token() {
+        // The last token is EoF, so insert at the end of a non-empty document
+
+        let (pre_indent, replacement_range) = find_pre_indent_and_replacement(&last_token);
+        Some(InsertInformation {
+            insertion_position: common::VersionedPosition::new(
+                url,
+                u32::from(document.text_range().end()) - replacement_range,
+            ),
+            replacement_range,
+            pre_indent,
+            indent: "    ".to_string(),
+            post_indent: "\n".to_string(),
+        })
+    } else {
+        // Entire document is empty
+        Some(InsertInformation {
+            insertion_position: common::VersionedPosition::new(
+                url,
+                u32::from(document.text_range().end()),
+            ),
+            replacement_range: 0,
+            pre_indent: String::new(),
+            indent: String::new(),
+            post_indent: "\n".to_string(),
+        })
+    }
+}
+
+pub fn add_new_component(
+    component_name: &str,
+    document: &syntax_nodes::Document,
+) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
+    let insert_position = insert_position_before_first_component(document)?;
+    let new_text = format!(
+        "{}component {component_name} {{ }}{}",
+        insert_position.pre_indent, insert_position.post_indent
+    );
+
+    let selection_offset = insert_position.insertion_position.offset()
+        + new_text
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(|c| c.len_utf8() as u32)
+            .sum::<u32>()
+        + "component ".len() as u32;
+
+    let source_file = document.source_file.clone();
+    let path = source_file.path().to_path_buf();
+
+    let start_pos =
+        util::map_position(&source_file, insert_position.insertion_position.offset().into());
+    let end_pos = util::map_position(
+        &source_file,
+        (insert_position.insertion_position.offset() + insert_position.replacement_range).into(),
+    );
+    let edit = lsp_types::TextEdit { range: lsp_types::Range::new(start_pos, end_pos), new_text };
+
+    Some((
+        common::create_workspace_edit_from_source_file(&source_file, vec![edit])?,
+        DropData { selection_offset, path },
+    ))
+}
+
 // find all elements covering the given `position`.
 fn drop_target_element_nodes(
     component_instance: &ComponentInstance,
@@ -443,7 +593,7 @@ fn drop_target_element_nodes(
             continue;
         };
 
-        if en.with_element_node(preview::is_element_node_ignored) {
+        if en.with_element_node(common::is_element_node_ignored) {
             continue;
         }
 
@@ -522,7 +672,7 @@ fn find_drop_location(
 fn find_move_location(
     component_instance: &ComponentInstance,
     position: LogicalPoint,
-    selected_element: common::ElementRcNode,
+    selected_element: &common::ElementRcNode,
     component_type: &str,
 ) -> Option<DropInformation> {
     let se = selected_element.clone();
@@ -563,7 +713,7 @@ fn find_filtered_location(
         let children_geometries: Vec<_> = drop_target_node
             .children()
             .iter()
-            .filter(|c| !c.with_element_node(preview::is_element_node_ignored))
+            .filter(|c| !c.with_element_node(common::is_element_node_ignored))
             .filter_map(|c| c.geometry_in(component_instance, &geometry).map(|g| ((mark)(c), g)))
             .collect();
 
@@ -601,21 +751,104 @@ fn find_filtered_location(
 
 /// Find the Element to insert into. None means we can not insert at this point.
 pub fn can_drop_at(position: LogicalPoint, component_type: &str) -> bool {
-    let dm = &super::component_instance()
+    let dm = &preview::component_instance()
         .and_then(|ci| find_drop_location(&ci, position, component_type));
 
     preview::set_drop_mark(&dm.as_ref().and_then(|dm| dm.drop_mark.clone()));
     dm.is_some()
 }
 
-/// Find the Element to insert into. None means we can not insert at this point.
-pub fn can_move_to(mouse_position: LogicalPoint, element_node: common::ElementRcNode) -> bool {
-    let component_type = element_node.component_type();
-    let dm = &super::component_instance()
-        .and_then(|ci| find_move_location(&ci, mouse_position, element_node, &component_type));
+pub fn workspace_edit_compiles(
+    document_cache: &common::DocumentCache,
+    workspace_edit: &lsp_types::WorkspaceEdit,
+) -> bool {
+    let Ok(mut result) = text_edit::apply_workspace_edit(document_cache, workspace_edit) else {
+        return false;
+    };
 
-    preview::set_drop_mark(&dm.as_ref().and_then(|dm| dm.drop_mark.clone()));
-    dm.is_some()
+    let mut diag = BuildDiagnostics::default();
+
+    let mut document_cache = document_cache.snapshot().expect("This is not loading anything!");
+
+    // Fill in changed sources:
+    for (u, c) in result.drain(..).map(|mut r| {
+        let contents = std::mem::take(&mut r.contents);
+        (r.url.clone(), contents)
+    }) {
+        diag = BuildDiagnostics::default(); // reset errors that might be due to missing changes elsewhere
+
+        let _ = preview::poll_once(document_cache.load_url(&u, None, c, &mut diag));
+    }
+
+    !diag.has_error()
+}
+
+/// Find the Element to insert into. None means we can not insert at this point.
+pub fn can_move_to(
+    document_cache: &common::DocumentCache,
+    position: LogicalPoint,
+    mouse_position: LogicalPoint,
+    element_node: common::ElementRcNode,
+) -> bool {
+    let Some(component_instance) = preview::component_instance() else {
+        return false;
+    };
+
+    let component_type = element_node.component_type();
+    let dm =
+        find_move_location(&component_instance, mouse_position, &element_node, &component_type);
+
+    let can_move = if let Some(dm) = &dm {
+        // Cache compilation results:
+        #[derive(Clone, Debug, Hash, Eq, PartialEq)]
+        struct CacheEntry {
+            source_element: by_address::ByAddress<i_slint_compiler::object_tree::ElementRc>,
+            source_node_index: usize,
+            target_element: by_address::ByAddress<i_slint_compiler::object_tree::ElementRc>,
+            target_node_index: usize,
+            child_index: usize,
+        }
+        static mut CACHE: std::cell::OnceCell<RefCell<clru::CLruCache<CacheEntry, bool>>> =
+            std::cell::OnceCell::new();
+
+        // SAFETY: This uses the document_cache, which means it runs in the UI thread.
+        let cache = unsafe {
+            CACHE.get_or_init(|| RefCell::new(clru::CLruCache::new(NonZeroUsize::new(10).unwrap())))
+        };
+        let mut cache = cache.borrow_mut();
+
+        let cache_entry = CacheEntry {
+            source_element: by_address::ByAddress(element_node.element.clone()),
+            source_node_index: element_node.debug_index,
+            target_element: by_address::ByAddress(dm.target_element_node.element.clone()),
+            target_node_index: dm.target_element_node.debug_index,
+            child_index: dm.child_index,
+        };
+
+        if let Some(does_compile) = cache.get(&cache_entry) {
+            *does_compile
+        } else {
+            let does_compile = if let Some((edit, _)) =
+                create_move_element_workspace_edit(&component_instance, dm, &element_node, position)
+            {
+                workspace_edit_compiles(document_cache, &edit)
+            } else {
+                false
+            };
+            cache.put(cache_entry, does_compile);
+            does_compile
+        }
+    } else {
+        false
+    };
+
+    if can_move {
+        preview::set_drop_mark(&dm.unwrap().drop_mark);
+    } else {
+        preview::set_drop_mark(&None);
+    }
+
+    can_move
 }
 
 /// Extra data on an added Element, relevant to the Preview side only.
@@ -664,7 +897,7 @@ fn drop_ignored_elements_from_node(
         node.children()
             .filter_map(|c| {
                 let e = common::extract_element(c.clone())?;
-                if preview::is_element_node_ignored(&e) {
+                if common::is_element_node_ignored(&e) {
                     pretty_node_removal_range(&e)
                         .map(|range| util::map_range(source_file, range))
                         .map(|range| lsp_types::TextEdit::new(range, String::new()))
@@ -686,7 +919,8 @@ pub fn drop_at(
 ) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
     let component_type = &component.name;
     let component_instance = preview::component_instance()?;
-    let tl = component_instance.definition().type_loader();
+    let document_cache = preview::document_cache()?;
+
     let drop_info = find_drop_location(&component_instance, position, component_type)?;
 
     let properties = {
@@ -735,7 +969,7 @@ pub fn drop_at(
 
     let (path, _) = drop_info.target_element_node.path_and_offset();
 
-    let doc = tl.get_document(&path)?;
+    let doc = document_cache.get_document_by_path(&path)?;
     let source_file = doc.node.as_ref().unwrap().source_file.clone();
 
     let mut edits = Vec::with_capacity(3);
@@ -843,41 +1077,33 @@ fn node_removal_text_edit(
     Some((source_file, lsp_types::TextEdit::new(range, replace_with)))
 }
 
-/// Find a location in a file that would be a good place to insert the new component at
-///
-/// Return a WorkspaceEdit to send to the editor and extra info for the live preview in
-/// the DropData struct.
-pub fn move_element_to(
-    element: common::ElementRcNode,
+pub fn create_move_element_workspace_edit(
+    component_instance: &ComponentInstance,
+    drop_info: &DropInformation,
+    element: &common::ElementRcNode,
     position: LogicalPoint,
-    mouse_position: LogicalPoint,
 ) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
     let component_type = element.component_type();
-    let component_instance = preview::component_instance()?;
-    let tl = component_instance.definition().type_loader();
-    let Some(drop_info) =
-        find_move_location(&component_instance, mouse_position, element.clone(), &component_type)
-    else {
-        element_selection::reselect_element();
-        // Can not drop here: Ignore the move
-        return None;
-    };
-
     let parent_of_element = element.parent();
 
     let placeholder_text = if Some(&drop_info.target_element_node) == parent_of_element.as_ref() {
         // We are moving within ourselves!
 
-        let size = element.geometries(&component_instance).first().map(|g| g.size)?;
+        let size = element.geometries(component_instance).first().map(|g| g.size)?;
 
         if drop_info.target_element_node.layout_kind() == ui::LayoutKind::None {
-            preview::resize_selected_element_impl(LogicalRect::new(position, size));
-            return None;
+            let Ok(Some((edit, _))) =
+                preview::resize_selected_element_impl(LogicalRect::new(position, size))
+            else {
+                return None;
+            };
+            let (path, selection_offset) = element.path_and_offset();
+            return Some((edit, DropData { selection_offset, path }));
         } else {
             let children = drop_info.target_element_node.children();
             let child_index = {
                 let tmp =
-                    children.iter().position(|c| c == &element).expect("We have the same parent");
+                    children.iter().position(|c| c == element).expect("We have the same parent");
                 if tmp == children.len() {
                     usize::MAX
                 } else {
@@ -886,7 +1112,6 @@ pub fn move_element_to(
             };
 
             if child_index == drop_info.child_index {
-                element_selection::reselect_element();
                 // Dropped onto myself: Ignore the move
                 return None;
             }
@@ -901,7 +1126,7 @@ pub fn move_element_to(
     };
 
     let new_text = {
-        let element_text_lines = extract_text_of_element(&element, &["x", "y"]);
+        let element_text_lines = extract_text_of_element(element, &["x", "y"]);
 
         if element_text_lines.is_empty() {
             String::new()
@@ -931,7 +1156,8 @@ pub fn move_element_to(
 
     let (path, _) = drop_info.target_element_node.path_and_offset();
 
-    let doc = tl.get_document(&path)?;
+    let document_cache = preview::document_cache()?;
+    let doc = document_cache.get_document_by_path(&path)?;
     let source_file = doc.node.as_ref().unwrap().source_file.clone();
 
     let mut selection_offset = drop_info.insert_info.insertion_position.offset()
@@ -988,4 +1214,339 @@ pub fn move_element_to(
         common::create_workspace_edit_from_source_files(edits)?,
         DropData { selection_offset, path },
     ))
+}
+
+/// Find a location in a file that would be a good place to insert the new component at
+///
+/// Return a WorkspaceEdit to send to the editor and extra info for the live preview in
+/// the DropData struct.
+pub fn move_element_to(
+    document_cache: &common::DocumentCache,
+    element: common::ElementRcNode,
+    position: LogicalPoint,
+    mouse_position: LogicalPoint,
+) -> Option<(lsp_types::WorkspaceEdit, DropData)> {
+    let component_instance = preview::component_instance()?;
+    let Some(drop_info) = find_move_location(
+        &component_instance,
+        mouse_position,
+        &element,
+        &element.component_type(),
+    ) else {
+        // Can not drop here: Ignore the move
+        return None;
+    };
+    create_move_element_workspace_edit(&component_instance, &drop_info, &element, position)
+        .and_then(|(e, d)| workspace_edit_compiles(document_cache, &e).then_some((e, d)))
+}
+
+#[cfg(test)]
+mod tests {
+    use lsp_types::Url;
+    use std::collections::HashMap;
+
+    use crate::{
+        common::{self, test, text_edit},
+        util,
+    };
+
+    pub const DEMO_CODE: &str = r#"import { Button } from "std-widgets.slint";
+
+component SomeComponent { // 69
+    @children
+}
+
+component Main { // 109
+    width: 200px;
+    height: 200px;
+
+    HorizontalLayout { // 160
+        Rectangle { // 194
+            SomeComponent { // 225
+                property <length> button-width: 80px;
+                Button { // 318
+                    width: parent.button-width;
+                    text: "Press me";
+                }
+            }
+        }
+        Rectangle { // 470
+            background: Colors.blue;
+        }
+    }
+}
+
+export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
+"#;
+
+    fn workspace_edit_setup(
+        edits: Vec<(usize, usize, &str)>,
+    ) -> (common::DocumentCache, lsp_types::WorkspaceEdit) {
+        let document_cache = test::compile_test_with_sources(
+            "fluent",
+            HashMap::from([(
+                Url::from_file_path(test::main_test_file_name()).unwrap(),
+                DEMO_CODE.to_string(),
+            )]),
+            false,
+        );
+        let doc = document_cache.get_document_by_path(&test::main_test_file_name()).unwrap();
+        let source_file = &doc.node.as_ref().unwrap().source_file;
+
+        let edits = edits
+            .iter()
+            .map(|(so, eo, t)| {
+                let range = util::map_range(
+                    source_file,
+                    rowan::TextRange::new(
+                        rowan::TextSize::new(*so as u32),
+                        rowan::TextSize::new(*eo as u32),
+                    ),
+                );
+                lsp_types::TextEdit { range, new_text: t.to_string() }
+            })
+            .collect();
+
+        let workspace_edit =
+            crate::common::create_workspace_edit_from_source_file(source_file, edits).unwrap();
+
+        (document_cache, workspace_edit)
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_ok() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(194, 194, "foo := ")]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_parse_fails() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(194, 194, "FOOBAR ")]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), false);
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_passes_fail() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(
+            194,
+            194,
+            "property <bool> foobar: root.foobar;\n        ",
+        )]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), false);
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_move_element_fail() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(
+            314,
+            450,
+            "",
+        ),
+        (
+            460,
+            461,
+            "    Button { // 318\n                width: parent.button_width;\n                text: \"Press me\";\n            }\n        "
+        )]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), false);
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_move_element_ok() {
+        let (document_cache, workspace_edit) =
+            workspace_edit_setup(vec![(
+            466,
+            540,
+            "",
+        ),
+        (
+            194,
+            194,
+            "Rectangle { // 470\n              background: Colors.blue;\n        }\n        "
+        ),]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_move_element_inside_component_ok() {
+        let (document_cache, workspace_edit) =
+            workspace_edit_setup(vec![(
+            314,
+            450,
+            "",
+        ),
+        (
+            264,
+            264,
+            "Button { // 318\n                    width: parent.button-width;\n                    text: \"Press me\";\n                }"
+        ),]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_edit_button_text_ok() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(409, 417, "xxx")]);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+    }
+
+    #[track_caller]
+    fn add_component_test(input: &str, output: &str, selection_offset: u32) {
+        let document_cache = test::compile_test_with_sources(
+            "fluent",
+            HashMap::from([(
+                Url::from_file_path(test::main_test_file_name()).unwrap(),
+                input.to_string(),
+            )]),
+            true,
+        );
+        let doc = document_cache.get_document_by_path(&test::main_test_file_name()).unwrap();
+        let doc_node = doc.node.as_ref().unwrap();
+
+        let (workspace_edit, drop_data) =
+            super::add_new_component("TestComponent", &doc_node).unwrap();
+
+        let result = text_edit::apply_workspace_edit(&document_cache, &workspace_edit).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].url.to_file_path().unwrap(), test::main_test_file_name());
+        assert_eq!(&result[0].contents, output);
+
+        assert_eq!(drop_data.path, test::main_test_file_name());
+        assert_eq!(drop_data.selection_offset, selection_offset);
+
+        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit), true);
+    }
+
+    #[test]
+    fn test_add_new_component_into_empty() {
+        add_component_test("", "component TestComponent { }\n", 10);
+    }
+
+    #[test]
+    fn test_add_new_component_into_ws() {
+        add_component_test("    \n    \n \n \t \n", "component TestComponent { }\n", 10);
+    }
+
+    #[test]
+    fn test_add_new_component_into_no_component_struct() {
+        add_component_test("struct S { }", "struct S { }\n\ncomponent TestComponent { }\n", 24);
+    }
+
+    #[test]
+    fn test_add_new_component_into_no_component_struct_nl() {
+        add_component_test(
+            "struct S { }\n    ",
+            "struct S { }\n\ncomponent TestComponent { }\n",
+            24,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_no_component_struct_nl_sp_nl() {
+        add_component_test(
+            "struct S { }\n  \n",
+            "struct S { }\n  \ncomponent TestComponent { }\n",
+            26,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_no_component_nl_sp_nl_sp() {
+        add_component_test(
+            "struct S { }\n  \n    ",
+            "struct S { }\n  \ncomponent TestComponent { }\n",
+            26,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_no_component_nl_sp_nl_nl() {
+        add_component_test(
+            "struct S { }\n  \n\n",
+            "struct S { }\n  \n\ncomponent TestComponent { }\n",
+            27,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_no_component_struct_nl_nl_nl_sp() {
+        add_component_test(
+            "struct S { }\n  \n\n    ",
+            "struct S { }\n  \n\ncomponent TestComponent { }\n",
+            27,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_component() {
+        add_component_test("component C { }", "component TestComponent { }\n\ncomponent C { }", 10);
+    }
+
+    #[test]
+    fn test_add_new_component_into_export_component() {
+        add_component_test(
+            "export component C { }",
+            "component TestComponent { }\n\nexport component C { }",
+            10,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_export_component_component() {
+        add_component_test(
+            "export component CE { }\n\ncomponent C { }",
+            "component TestComponent { }\n\nexport component CE { }\n\ncomponent C { }",
+            10,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_component_export_component() {
+        add_component_test(
+            "component C { }\n\nexport component CE { }",
+            "component TestComponent { }\n\ncomponent C { }\n\nexport component CE { }",
+            10,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_struct_export_component() {
+        add_component_test(
+            "struct S { }export component C { }",
+            "struct S { }\n\ncomponent TestComponent { }\n\nexport component C { }",
+            24,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_struct_export_sp_component() {
+        add_component_test(
+            "struct S { }     export component C { }",
+            "struct S { }\n\ncomponent TestComponent { }\n\nexport component C { }",
+            24,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_ws_component() {
+        add_component_test(
+            "\n     \n  \n\t  \n          component C { }",
+            "component TestComponent { }\n\ncomponent C { }",
+            10,
+        );
+    }
+
+    #[test]
+    fn test_add_new_component_into_struct_sp_nl_sp_component() {
+        add_component_test(
+            "struct S { }  \n  component C { }",
+            "struct S { }  \n\ncomponent TestComponent { }\n\ncomponent C { }",
+            26,
+        );
+    }
 }

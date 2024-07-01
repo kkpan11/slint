@@ -44,12 +44,19 @@ pub struct Document {
     pub node: Option<syntax_nodes::Document>,
     pub inner_components: Vec<Rc<Component>>,
     pub inner_types: Vec<Type>,
-    pub root_component: Rc<Component>,
     pub local_registry: TypeRegister,
     /// A list of paths to .ttf/.ttc files that are supposed to be registered on
     /// startup for custom font use.
     pub custom_fonts: Vec<(String, crate::parser::SyntaxToken)>,
     pub exports: Exports,
+
+    /// Map of resources that should be embedded in the generated code, indexed by their absolute path on
+    /// disk on the build system
+    pub embedded_file_resources:
+        RefCell<HashMap<String, crate::embedded_resources::EmbeddedResources>>,
+
+    /// The list of used extra types used recursively.
+    pub used_types: RefCell<UsedSubTypes>,
 }
 
 impl Document {
@@ -157,23 +164,6 @@ impl Document {
         let mut exports = Exports::from_node(&node, &inner_components, &local_registry, diag);
         exports.add_reexports(reexports, diag);
 
-        let root_component = exports
-            .last_exported_component
-            .clone()
-            .or_else(|| {
-                node.ImportSpecifier()
-                    .last()
-                    .and_then(|import| {
-                        crate::typeloader::ImportedName::extract_imported_names(&import).last()
-                    })
-                    .and_then(|import| local_registry.lookup_element(&import.internal_name).ok())
-                    .and_then(|c| match c {
-                        ElementType::Component(c) => Some(c),
-                        _ => None,
-                    })
-            })
-            .unwrap_or_default();
-
         let custom_fonts = foreign_imports
             .into_iter()
             .filter_map(|import| {
@@ -239,12 +229,64 @@ impl Document {
 
         Document {
             node: Some(node),
-            root_component,
             inner_components,
             inner_types,
             local_registry,
             custom_fonts,
             exports,
+            embedded_file_resources: Default::default(),
+            used_types: Default::default(),
+        }
+    }
+
+    pub fn exported_roots(&self) -> impl DoubleEndedIterator<Item = Rc<Component>> + '_ {
+        let mut iter = self
+            .exports
+            .iter()
+            .filter_map(|e| e.1.as_ref().left())
+            .filter(|c| !c.is_global())
+            .cloned()
+            .peekable();
+        // If that is empty, we return the last import. (We need to chain because we need to return the same type for `impl Iterator`)
+        let extra = if iter.peek().is_some() {
+            None
+        } else {
+            self.node
+                .as_ref()
+                .and_then(|n| n.ImportSpecifier().last())
+                .and_then(|import| {
+                    crate::typeloader::ImportedName::extract_imported_names(&import).last()
+                })
+                .and_then(|import| self.local_registry.lookup_element(&import.internal_name).ok())
+                .and_then(|c| match c {
+                    ElementType::Component(c) => Some(c),
+                    _ => None,
+                })
+        };
+        iter.chain(extra)
+    }
+
+    /// This is the component that is going to be instantiated by the interpreter
+    pub fn last_exported_component(&self) -> Option<Rc<Component>> {
+        self.exports
+            .iter()
+            .filter_map(|e| Some((&e.0.name_ident, e.1.as_ref().left()?)))
+            .max_by_key(|(n, _)| n.text_range().end())
+            .map(|(_, c)| c.clone())
+            .or_else(|| self.exported_roots().last())
+    }
+
+    /// visit all root and used component (including globals)
+    pub fn visit_all_used_components(&self, mut v: impl FnMut(&Rc<Component>)) {
+        let used_types = self.used_types.borrow();
+        for c in &used_types.sub_components {
+            v(c);
+        }
+        for c in self.exported_roots() {
+            v(&c);
+        }
+        for c in &used_types.globals {
+            v(c);
         }
     }
 }
@@ -318,11 +360,6 @@ pub struct Component {
     /// optimized away, but their properties may still be in use
     pub optimized_elements: RefCell<Vec<ElementRc>>,
 
-    /// Map of resources that should be embedded in the generated code, indexed by their absolute path on
-    /// disk on the build system
-    pub embedded_file_resources:
-        RefCell<HashMap<String, crate::embedded_resources::EmbeddedResources>>,
-
     /// The layout constraints of the root item
     pub root_constraints: RefCell<LayoutConstraints>,
 
@@ -332,9 +369,6 @@ pub struct Component {
 
     pub init_code: RefCell<InitCode>,
 
-    /// The list of used extra types used (recursively) by this root component.
-    /// (This only make sense on the root component)
-    pub used_types: RefCell<UsedSubTypes>,
     pub popup_windows: RefCell<Vec<PopupWindow>>,
 
     /// This component actually inherits PopupWindow (although that has been changed to a Window by the lower_popups pass)
@@ -347,10 +381,6 @@ pub struct Component {
     /// The list of properties (name and type) declared as private in the component.
     /// This is used to issue better error in the generated code if the property is used.
     pub private_properties: RefCell<Vec<(String, Type)>>,
-
-    /// This is the main entry point for the code generators. Such a component
-    /// should have the full API, etc.
-    pub is_root_component: Cell<bool>,
 }
 
 impl Component {
@@ -384,8 +414,8 @@ impl Component {
         let weak = Rc::downgrade(&c);
         recurse_elem(&c.root_element, &(), &mut |e, _| {
             e.borrow_mut().enclosing_component = weak.clone();
-            if let Some(ref mut qualified_id) =
-                e.borrow_mut().debug.first_mut().unwrap().qualified_id
+            if let Some(qualified_id) =
+                e.borrow_mut().debug.first_mut().and_then(|x| x.qualified_id.as_mut())
             {
                 *qualified_id = format!("{}::{}", c.id, qualified_id);
             }
@@ -402,14 +432,6 @@ impl Component {
         }
     }
 
-    pub fn visible_in_public_api(&self) -> bool {
-        if self.is_global() {
-            !self.exported_global_names.borrow().is_empty()
-        } else {
-            self.parent_element.upgrade().is_none() && self.is_root_component.get()
-        }
-    }
-
     /// Returns the names of aliases to global singletons, exactly as
     /// specified in the .slint markup (not normalized).
     pub fn global_aliases(&self) -> Vec<String> {
@@ -419,12 +441,6 @@ impl Component {
             .filter(|name| name.as_str() != self.root_element.borrow().id)
             .map(|name| name.original_name())
             .collect()
-    }
-
-    pub fn is_sub_component(&self) -> bool {
-        !self.is_root_component.get()
-            && self.parent_element.upgrade().is_none()
-            && !self.is_global()
     }
 
     // Number of repeaters in this component, including sub-components
@@ -731,7 +747,7 @@ pub fn pretty_print(
     if e.is_component_placeholder {
         write!(f, "/* Component Placeholder */ ")?;
     }
-    writeln!(f, "{} := {} {{", e.id, e.base_type)?;
+    writeln!(f, "{} := {} {{  /* {} */", e.id, e.base_type, e.element_infos())?;
     let mut indentation = indentation + 1;
     macro_rules! indent {
         () => {
@@ -770,9 +786,9 @@ pub fn pretty_print(
     for (name, ch) in &e.change_callbacks {
         for ex in &*ch.borrow() {
             indent!();
-            writeln!(f, "changed {name} => {{ ")?;
+            write!(f, "changed {name} => ")?;
             expression_tree::pretty_print(f, ex)?;
-            writeln!(f, "  }}")?;
+            writeln!(f, "")?;
         }
     }
     if !e.states.is_empty() {
@@ -1214,12 +1230,10 @@ impl Element {
                 match token.as_token().unwrap().text() {
                     "pure" => pure = Some(true),
                     "public" => {
-                        debug_assert_eq!(visibility, PropertyVisibility::Private);
                         visibility = PropertyVisibility::Public;
                         pure = pure.or(Some(false));
                     }
                     "protected" => {
-                        debug_assert_eq!(visibility, PropertyVisibility::Private);
                         visibility = PropertyVisibility::Protected;
                         pure = pure.or(Some(false));
                     }
@@ -1349,7 +1363,24 @@ impl Element {
             }
             let Some(prop) = parser::identifier_text(&ch.DeclaredIdentifier()) else { continue };
             let lookup_result = r.lookup_property(&prop);
-            if lookup_result.property_visibility == PropertyVisibility::Private
+            if !lookup_result.is_valid() {
+                diag.push_error(
+                    format!("Property '{prop}' does not exist"),
+                    &ch.DeclaredIdentifier(),
+                );
+            } else if !lookup_result.property_type.is_property_type() {
+                let what = match lookup_result.property_type {
+                    Type::Function { .. } => "a function",
+                    Type::Callback { .. } => "a callback",
+                    _ => "not a property",
+                };
+                diag.push_error(
+                    format!(
+                        "Change callback can only be set on properties, and '{prop}' is {what}"
+                    ),
+                    &ch.DeclaredIdentifier(),
+                );
+            } else if lookup_result.property_visibility == PropertyVisibility::Private
                 && !lookup_result.is_local_to_component
             {
                 diag.push_error(
@@ -2120,12 +2151,6 @@ pub fn recurse_elem_including_sub_components_no_borrow<State>(
         .borrow()
         .iter()
         .for_each(|p| recurse_elem_including_sub_components_no_borrow(&p.component, state, vis));
-    component
-        .used_types
-        .borrow()
-        .globals
-        .iter()
-        .for_each(|p| recurse_elem_including_sub_components_no_borrow(p, state, vis));
 }
 
 /// This visit the binding attached to this element, but does not recurse in children elements
@@ -2406,7 +2431,6 @@ impl ExportedName {
 pub struct Exports {
     #[deref]
     components_or_types: Vec<(ExportedName, Either<Rc<Component>, Type>)>,
-    last_exported_component: Option<Rc<Component>>,
 }
 
 impl Exports {
@@ -2439,18 +2463,10 @@ impl Exports {
             };
 
         let mut sorted_exports_with_duplicates: Vec<(ExportedName, _)> = Vec::new();
-        let mut last_exported_component = None;
 
         let mut extend_exports =
             |it: &mut dyn Iterator<Item = (ExportedName, Either<Rc<Component>, Type>)>| {
                 for (name, compo_or_type) in it {
-                    match compo_or_type.as_ref().left() {
-                        Some(compo) if !compo.is_global() => {
-                            last_exported_component = Some(compo.clone())
-                        }
-                        _ => {}
-                    }
-
                     let pos = sorted_exports_with_duplicates
                         .partition_point(|(existing_name, _)| existing_name.name <= name.name);
                     sorted_exports_with_duplicates.insert(pos, (name, compo_or_type));
@@ -2549,30 +2565,28 @@ impl Exports {
             sorted_deduped_exports.push((exported_name, compo_or_type));
         }
 
-        if sorted_deduped_exports.is_empty() {
-            if let Some(last_compo) = inner_components.last() {
-                if last_compo.is_global() {
-                    diag.push_warning(
-                        "Global singleton is implicitly marked for export. This is deprecated and it should be explicitly exported"
-                            .into(),
-                        &last_compo.node,
-                    );
-                } else {
-                    diag.push_warning("Component is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node)
+        if let Some(last_compo) = inner_components.last() {
+            let name = last_compo.id.clone();
+            if last_compo.is_global() {
+                if sorted_deduped_exports.is_empty() {
+                    diag.push_warning("Global singleton is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node);
+                    sorted_deduped_exports.push((
+                        ExportedName { name, name_ident: doc.clone().into() },
+                        Either::Left(last_compo.clone()),
+                    ))
                 }
-                let name = last_compo.id.clone();
+            } else if !sorted_deduped_exports
+                .iter()
+                .any(|e| e.1.as_ref().left().is_some_and(|c| !c.is_global()))
+            {
+                diag.push_warning("Component is implicitly marked for export. This is deprecated and it should be explicitly exported".into(), &last_compo.node);
                 sorted_deduped_exports.push((
                     ExportedName { name, name_ident: doc.clone().into() },
                     Either::Left(last_compo.clone()),
                 ))
             }
         }
-
-        if last_exported_component.is_none() {
-            last_exported_component = inner_components.last().cloned();
-        }
-
-        Self { components_or_types: sorted_deduped_exports, last_exported_component }
+        Self { components_or_types: sorted_deduped_exports }
     }
 
     pub fn add_reexports(
@@ -2603,6 +2617,32 @@ impl Exports {
             .binary_search_by(|(exported_name, _)| exported_name.as_str().cmp(name))
             .ok()
             .map(|index| self.components_or_types[index].1.clone())
+    }
+
+    pub fn retain(
+        &mut self,
+        func: impl FnMut(&mut (ExportedName, Either<Rc<Component>, Type>)) -> bool,
+    ) {
+        self.components_or_types.retain_mut(func)
+    }
+
+    pub(crate) fn snapshot(&self, snapshotter: &mut crate::typeloader::Snapshotter) -> Self {
+        let components_or_types = self
+            .components_or_types
+            .iter()
+            .map(|(en, either)| {
+                let en = en.clone();
+                let either = match either {
+                    itertools::Either::Left(l) => {
+                        itertools::Either::Left(snapshotter.snapshot_component(l))
+                    }
+                    itertools::Either::Right(r) => itertools::Either::Right(r.clone()),
+                };
+                (en, either)
+            })
+            .collect();
+
+        Self { components_or_types }
     }
 }
 

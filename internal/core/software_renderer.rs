@@ -12,11 +12,11 @@ mod fixed;
 mod fonts;
 
 use self::fonts::GlyphRenderer;
-use crate::api::Window;
+use crate::api::{PlatformError, Window};
 use crate::graphics::rendering_metrics_collector::{RefreshMode, RenderingMetricsCollector};
 use crate::graphics::{BorderRadius, PixelFormat, SharedImageBuffer, SharedPixelBuffer};
 use crate::item_rendering::{CachedRenderingData, DirtyRegion, RenderBorderRectangle, RenderImage};
-use crate::items::{ItemRc, TextOverflow};
+use crate::items::{ItemRc, TextOverflow, TextWrap};
 use crate::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
     PhysicalPx, PointLengths, RectLengths, ScaleFactor, SizeLengths,
@@ -63,32 +63,22 @@ pub enum RepaintBufferType {
     SwappedBuffers,
 }
 
-/// This module is just a trick to make the Window public only when `feature = "software-renderer-rotation"`
-#[allow(unused)]
-mod internal {
-    use super::*;
-    /// This enum describes the rotation that should be applied to the contents rendered by the software renderer.
-    ///
-    /// Argument to be passed in [`SoftwareRenderer::set_rendering_rotation`].
-    #[non_exhaustive]
-    #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
-    pub enum RenderingRotation {
-        /// No rotation
-        #[default]
-        NoRotation,
-        /// Rotate 90° to the right
-        Rotate90,
-        /// 180° rotation (upside-down)
-        Rotate180,
-        /// Rotate 90° to the left
-        Rotate270,
-    }
+/// This enum describes the rotation that should be applied to the contents rendered by the software renderer.
+///
+/// Argument to be passed in [`SoftwareRenderer::set_rendering_rotation`].
+#[non_exhaustive]
+#[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum RenderingRotation {
+    /// No rotation
+    #[default]
+    NoRotation,
+    /// Rotate 90° to the right
+    Rotate90,
+    /// 180° rotation (upside-down)
+    Rotate180,
+    /// Rotate 90° to the left
+    Rotate270,
 }
-
-#[cfg(feature = "software-renderer-rotation")]
-pub use internal::RenderingRotation;
-#[cfg(not(feature = "software-renderer-rotation"))]
-use internal::RenderingRotation;
 
 impl RenderingRotation {
     fn is_transpose(self) -> bool {
@@ -405,15 +395,11 @@ impl SoftwareRenderer {
     /// Set how the window need to be rotated in the buffer.
     ///
     /// This is typically used to implement screen rotation in software
-    #[cfg(feature = "software-renderer-rotation")]
-    // This API is under a feature flag because it is experimental for now.
-    // It should be a property of the Window instead (set via dispatch_event?)
     pub fn set_rendering_rotation(&self, rotation: RenderingRotation) {
         self.rotation.set(rotation)
     }
 
     /// Return the current rotation. See [`Self::set_rendering_rotation()`]
-    #[cfg(feature = "software-renderer-rotation")]
     pub fn rendering_rotation(&self) -> RenderingRotation {
         self.rotation.get()
     }
@@ -629,8 +615,9 @@ impl RendererSealed for SoftwareRenderer {
         text: &str,
         max_width: Option<LogicalLength>,
         scale_factor: ScaleFactor,
+        text_wrap: TextWrap,
     ) -> LogicalSize {
-        fonts::text_size(font_request, text, max_width, scale_factor)
+        fonts::text_size(font_request, text, max_width, scale_factor, text_wrap)
     }
 
     fn text_input_byte_offset_for_position(
@@ -803,6 +790,34 @@ impl RendererSealed for SoftwareRenderer {
     fn set_window_adapter(&self, window_adapter: &Rc<dyn WindowAdapter>) {
         *self.maybe_window_adapter.borrow_mut() = Some(Rc::downgrade(window_adapter));
         self.partial_cache.borrow_mut().clear();
+    }
+
+    fn screenshot(&self) -> Result<SharedImageBuffer, PlatformError> {
+        let Some(window_adapter) =
+            self.maybe_window_adapter.borrow().as_ref().and_then(|w| w.upgrade())
+        else {
+            return Err(
+                "SoftwareRenderer's screenshot called without a window adapter present".into()
+            );
+        };
+
+        let window = window_adapter.window();
+        let size = window.size();
+
+        let Some((width, height)) = size.width.try_into().ok().zip(size.height.try_into().ok())
+        else {
+            // Nothing to render
+            return Err("grab_window() called on window with invalid size".into());
+        };
+
+        let mut target_buffer = SharedPixelBuffer::<crate::graphics::Rgb8Pixel>::new(width, height);
+
+        self.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        self.render(target_buffer.make_mut_slice(), width as usize);
+        // ensure that caches are clear for the next call
+        self.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+
+        Ok(SharedImageBuffer::RGB8(target_buffer))
     }
 }
 

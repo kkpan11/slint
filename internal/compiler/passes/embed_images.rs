@@ -15,23 +15,21 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 pub async fn embed_images(
-    component: &Rc<Component>,
+    doc: &Document,
     embed_files: EmbedResourcesKind,
     scale_factor: f64,
     resource_url_mapper: &Option<Rc<dyn Fn(&str) -> Pin<Box<dyn Future<Output = Option<String>>>>>>,
     diag: &mut BuildDiagnostics,
 ) {
-    let global_embedded_resources = &component.embedded_file_resources;
+    if embed_files == EmbedResourcesKind::Nothing && resource_url_mapper.is_none() {
+        return;
+    }
 
-    let all_components = component
-        .used_types
-        .borrow()
-        .sub_components
-        .iter()
-        .chain(component.used_types.borrow().globals.iter())
-        .chain(std::iter::once(component))
-        .cloned()
-        .collect::<Vec<_>>();
+    let global_embedded_resources = &doc.embedded_file_resources;
+
+    let mut all_components = Vec::new();
+    doc.visit_all_used_components(|c| all_components.push(c.clone()));
+    let all_components = all_components;
 
     let mapped_urls = {
         let mut urls = HashMap::<String, Option<String>>::new();
@@ -87,27 +85,24 @@ fn embed_images_from_expression(
     diag: &mut BuildDiagnostics,
 ) {
     if let Expression::ImageReference { ref mut resource_ref, source_location, nine_slice: _ } = e {
-        match resource_ref {
-            ImageReference::AbsolutePath(path) => {
-                // used mapped path:
-                let mapped_path =
-                    urls.get(path).unwrap_or(&Some(path.clone())).clone().unwrap_or(path.clone());
-                *path = mapped_path;
-
-                if embed_files != EmbedResourcesKind::OnlyBuiltinResources
-                    || path.starts_with("builtin:/")
-                {
-                    *resource_ref = embed_image(
-                        global_embedded_resources,
-                        embed_files,
-                        path,
-                        scale_factor,
-                        diag,
-                        source_location,
-                    );
-                }
+        if let ImageReference::AbsolutePath(path) = resource_ref {
+            // used mapped path:
+            let mapped_path =
+                urls.get(path).unwrap_or(&Some(path.clone())).clone().unwrap_or(path.clone());
+            *path = mapped_path;
+            if embed_files != EmbedResourcesKind::Nothing
+                && (embed_files != EmbedResourcesKind::OnlyBuiltinResources
+                    || path.starts_with("builtin:/"))
+            {
+                *resource_ref = embed_image(
+                    global_embedded_resources,
+                    embed_files,
+                    path,
+                    scale_factor,
+                    diag,
+                    source_location,
+                );
             }
-            _ => {}
         }
     };
 
@@ -365,14 +360,13 @@ fn load_image(
     if file.canon_path.extension() == Some(OsStr::new("svg"))
         || file.canon_path.extension() == Some(OsStr::new("svgz"))
     {
-        let options = usvg::Options::default();
-        let tree = i_slint_common::sharedfontdb::FONT_DB.with(|db| {
+        let tree = i_slint_common::sharedfontdb::FONT_DB.with_borrow(|db| {
+            let option = usvg::Options { fontdb: (*db).clone(), ..Default::default() };
             match file.builtin_contents {
-                Some(data) => usvg::Tree::from_data(data, &options, &db.borrow()),
+                Some(data) => usvg::Tree::from_data(data, &option),
                 None => usvg::Tree::from_data(
                     std::fs::read(&file.canon_path).map_err(image::ImageError::IoError)?.as_slice(),
-                    &options,
-                    &db.borrow(),
+                    &option,
                 ),
             }
             .map_err(|e| {

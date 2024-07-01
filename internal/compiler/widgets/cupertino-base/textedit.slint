@@ -80,6 +80,7 @@ export component TextEdit {
     callback edited(/* text */ string);
     accessible-role: AccessibleRole.text-input;
     accessible-value <=> text;
+    accessible-placeholder-text: text == "" ? placeholder-text : "";
 
     public function set-selection-offsets(start: int,end: int){
         text-input.set-selection-offsets(start, end);
@@ -138,7 +139,7 @@ export component TextEdit {
         y: 8px;
         width: parent.width - 16px;
         height: parent.height - 16px;
-        viewport-width: root.wrap == TextWrap.word-wrap ? self.visible-width : max(self.visible-width, text-input.preferred-width);
+        viewport-width: root.wrap == TextWrap.no-wrap ? max(self.visible-width, text-input.preferred-width) : self.visible-width;
         viewport-height: max(self.visible-height, text-input.preferred-height);
 
         text-input := TextInput {

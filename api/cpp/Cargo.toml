@@ -42,10 +42,11 @@ renderer-skia-vulkan = ["i-slint-backend-selector/renderer-skia-vulkan", "render
 renderer-software = ["i-slint-backend-selector/renderer-software"]
 gettext = ["i-slint-core/gettext-rs"]
 accessibility = ["i-slint-backend-selector/accessibility"]
+system-testing = ["i-slint-backend-selector/system-testing"]
 
 std = ["image", "i-slint-core/default", "i-slint-backend-selector"]
 freestanding = ["i-slint-core/libm", "i-slint-core/unsafe-single-threaded"]
-experimental = ["i-slint-core/software-renderer-rotation"]
+experimental = []
 
 default = ["std", "backend-winit", "renderer-femtovg", "backend-qt"]
 
@@ -55,7 +56,7 @@ i-slint-backend-testing = { workspace = true, optional = true, features = ["ffi"
 i-slint-renderer-skia = {  workspace = true, features = ["default", "x11", "wayland"], optional = true }
 i-slint-core = { workspace = true, features = ["ffi"] }
 slint-interpreter = { workspace = true, features = ["ffi", "compat-1-2"], optional = true }
-raw-window-handle = { version = "0.5", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 # Enable image-rs' default features to make all image formats to C++ users
 image = { workspace = true, optional = true, features = ["default"] }
 

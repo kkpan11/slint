@@ -7,7 +7,7 @@ use i_slint_compiler::object_tree::{Component, ElementRc};
 use i_slint_core::lengths::LogicalPoint;
 use slint_interpreter::ComponentInstance;
 
-use crate::{common, preview};
+use crate::common;
 
 use super::{ext::ElementRcNodeExt, ui};
 
@@ -186,7 +186,7 @@ fn collect_all_element_nodes_covering_impl(
     position: LogicalPoint,
     component_instance: &ComponentInstance,
     current_element: &ElementRc,
-    component_stack: &Vec<Rc<Component>>,
+    component_stack: &mut Vec<Rc<Component>>,
     result: &mut Vec<SelectionCandidate>,
 ) {
     let ce = self_or_embedded_component_root(current_element);
@@ -195,15 +195,11 @@ fn collect_all_element_nodes_covering_impl(
     };
     let component_root_element = component.root_element.clone();
 
-    let mut tmp;
-    let children_component_stack = {
-        if Rc::ptr_eq(&component_root_element, &ce) {
-            tmp = component_stack.clone();
-            tmp.push(component.clone());
-            &tmp
-        } else {
-            component_stack
-        }
+    let must_pop = if Rc::ptr_eq(&component_root_element, &ce) {
+        component_stack.push(component.clone());
+        true
+    } else {
+        false
     };
 
     for c in ce.borrow().children.iter().rev() {
@@ -211,9 +207,13 @@ fn collect_all_element_nodes_covering_impl(
             position,
             component_instance,
             c,
-            children_component_stack,
+            component_stack,
             result,
         );
+    }
+
+    if must_pop {
+        component_stack.pop();
     }
 
     if element_covers_point(position, component_instance, &ce) {
@@ -238,7 +238,7 @@ pub fn collect_all_element_nodes_covering(
         position,
         component_instance,
         &root_element,
-        &vec![],
+        &mut vec![],
         &mut elements,
     );
     elements
@@ -260,7 +260,7 @@ fn select_element_at_impl(
 ) -> Option<common::ElementRcNode> {
     let root_node = common::ElementRcNode::new(root_element(component_instance), 0)?;
     // The main node is the first non-ignored node below the root
-    // This is to find the first "real" eleemnt in the preview, ignoring the
+    // This is to find the first "real" element in the preview, ignoring the
     // synthetic nodes we added on top to make the preview work.
     let main_node = find_main_node(&root_node);
     for sc in &collect_all_element_nodes_covering(position, component_instance) {
@@ -306,7 +306,7 @@ fn filter_nodes_for_selection(
 ) -> Option<common::ElementRcNode> {
     let en = selection_candidate.as_element_node()?;
 
-    if en.with_element_node(preview::is_element_node_ignored) {
+    if en.with_element_node(common::is_element_node_ignored) {
         return None;
     }
 
@@ -391,6 +391,7 @@ pub fn select_element_behind(x: f32, y: f32, enter_component: bool, reverse: boo
 // Called from UI thread!
 pub fn reselect_element() {
     let Some(selected) = super::selected_element() else {
+        super::set_selected_element(None, &[], false);
         return;
     };
     let Some(component_instance) = super::component_instance() else {

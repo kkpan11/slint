@@ -4,11 +4,10 @@
 use i_slint_core::api::PhysicalSize as PhysicalWindowSize;
 use i_slint_core::platform::PlatformError;
 use std::cell::RefCell;
+use std::rc::Rc;
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN;
-
-use raw_window_handle::HasRawWindowHandle;
 
 use windows::Win32::Foundation::{DXGI_STATUS_OCCLUDED, HANDLE, HWND, S_OK};
 use windows::Win32::Graphics::Direct3D12::{
@@ -70,11 +69,11 @@ impl SwapChain {
             ..Default::default()
         };
 
-        let hwnd = match window_handle.raw_window_handle() {
+        let hwnd = match window_handle.as_raw() {
             raw_window_handle::RawWindowHandle::Win32(raw_window_handle::Win32WindowHandle {
                 hwnd,
                 ..
-            }) => HWND(hwnd as _),
+            }) => HWND(hwnd.get() as _),
             _ => {
                 return Err(format!("Metal surface is only supported with Win32WindowHandle").into())
             }
@@ -245,8 +244,8 @@ pub struct D3DSurface {
 
 impl super::Surface for D3DSurface {
     fn new(
-        window_handle: raw_window_handle::WindowHandle<'_>,
-        _display_handle: raw_window_handle::DisplayHandle<'_>,
+        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
+        _display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
         size: PhysicalWindowSize,
     ) -> Result<Self, i_slint_core::platform::PlatformError> {
         let factory_flags = 0;
@@ -356,6 +355,10 @@ impl super::Surface for D3DSurface {
 
         let gr_context = unsafe { skia_safe::gpu::DirectContext::new_d3d(&backend_context, None) }
             .ok_or_else(|| format!("unable to create Skia D3D DirectContext"))?;
+
+        let window_handle = window_handle
+            .window_handle()
+            .map_err(|e| format!("error obtaining window handle for skia d3d renderer: {e}"))?;
 
         let swap_chain = RefCell::new(SwapChain::new(
             queue,

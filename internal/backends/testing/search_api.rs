@@ -1,36 +1,42 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+use core::ops::ControlFlow;
 use i_slint_core::accessibility::{AccessibilityAction, AccessibleStringProperty};
+use i_slint_core::api::{ComponentHandle, LogicalPosition};
+use i_slint_core::graphics::euclid;
 use i_slint_core::item_tree::{ItemTreeRc, ItemVisitorResult, ItemWeak, TraversalOrder};
 use i_slint_core::items::ItemRc;
+use i_slint_core::lengths::{LogicalPx, LogicalRect};
 use i_slint_core::window::WindowInner;
-use i_slint_core::{SharedString, SharedVector};
-
-pub(crate) fn search_item(
-    item_tree: &ItemTreeRc,
-    mut filter: impl FnMut(&ElementHandle) -> bool,
-) -> SharedVector<ElementHandle> {
-    let mut result = SharedVector::default();
-    i_slint_core::item_tree::visit_items(
-        item_tree,
-        TraversalOrder::BackToFront,
-        |parent_tree, _, index, _| {
-            let item_rc = ItemRc::new(parent_tree.clone(), index);
-            let elements = ElementHandle::collect_elements(item_rc);
-            result.extend(elements.filter(|elem| filter(elem)));
-            ItemVisitorResult::Continue(())
-        },
-        (),
-    );
-    result
-}
+use i_slint_core::{Coord, SharedString};
 
 fn warn_missing_debug_info() {
     i_slint_core::debug_log!("The use of the ElementHandle API requires the presence of debug info in Slint compiler generated code. Set the `SLINT_EMIT_DEBUG_INFO=1` environment variable at application build time")
 }
 
-/// `ElementHandle`` wraps an existing element in a Slint UI. An ElementHandle does not keep
+mod internal {
+    /// Used as base of another trait so it cannot be re-implemented
+    pub trait Sealed {}
+}
+
+pub(crate) use internal::Sealed;
+
+/// Trait for type that can be searched for element. This is implemented for everything that implements [`ComponentHandle`]
+pub trait ElementRoot: Sealed {
+    #[doc(hidden)]
+    fn item_tree(&self) -> ItemTreeRc;
+}
+
+impl<T: ComponentHandle> ElementRoot for T {
+    fn item_tree(&self) -> ItemTreeRc {
+        WindowInner::from_pub(self.window()).component()
+    }
+}
+
+impl<T: ComponentHandle> Sealed for T {}
+
+/// `ElementHandle` wraps an existing element in a Slint UI. An ElementHandle does not keep
 /// the corresponding element in the UI alive. Use [`Self::is_valid()`] to verify that
 /// it is still alive.
 ///
@@ -52,22 +58,72 @@ impl ElementHandle {
             .map(move |element_index| ElementHandle { item: item.downgrade(), element_index })
     }
 
-    /// Returns true if the element still exists in the in UI and is valid to access; false otherwise.
-    pub fn is_valid(&self) -> bool {
-        self.item.upgrade().is_some()
+    /// Visit elements of a component and call the visitor to each of them, until the visitor returns [`ControlFlow::Break`].
+    /// When the visitor breaks, the function returns the value. If it doesn't break, the function returns None.
+    ///
+    /// Only visible elements are being visited
+    pub fn visit_elements<R>(
+        component: &impl ElementRoot,
+        mut visitor: impl FnMut(ElementHandle) -> ControlFlow<R>,
+    ) -> Option<R> {
+        let mut result = None;
+        let item_tree = component.item_tree();
+
+        #[derive(Clone, Copy, Debug)]
+        struct GeometryState {
+            offset: euclid::Vector2D<Coord, LogicalPx>,
+            clipped: LogicalRect,
+        }
+        i_slint_core::item_tree::visit_items(
+            &item_tree,
+            TraversalOrder::BackToFront,
+            |parent_tree, item_pin, index, state| {
+                let item_rc = ItemRc::new(parent_tree.clone(), index);
+                let geometry = item_rc.geometry().translate(state.offset);
+                let intersection = geometry.intersection(&state.clipped).unwrap_or_default();
+                let mut new_state = *state;
+                new_state.offset = geometry.origin.to_vector();
+                if i_slint_core::item_rendering::is_clipping_item(item_pin) {
+                    new_state.clipped = intersection;
+                }
+                if !intersection.is_empty()
+                    || (geometry.is_empty() && new_state.clipped.contains(geometry.center()))
+                {
+                    let elements = ElementHandle::collect_elements(item_rc);
+                    for e in elements {
+                        match visitor(e) {
+                            ControlFlow::Continue(_) => (),
+                            ControlFlow::Break(x) => {
+                                result = Some(x);
+                                return ItemVisitorResult::Abort;
+                            }
+                        }
+                    }
+                }
+                ItemVisitorResult::Continue(new_state)
+            },
+            GeometryState {
+                offset: Default::default(),
+                clipped: LogicalRect::from_size((f32::MAX, f32::MAX).into()),
+            },
+        );
+        result
     }
 
     /// This function searches through the entire tree of elements of `component`, looks for
     /// elements that have a `accessible-label` property with the provided value `label`,
     /// and returns an iterator over the found elements.
     pub fn find_by_accessible_label(
-        component: &impl i_slint_core::api::ComponentHandle,
+        component: &impl ElementRoot,
         label: &str,
     ) -> impl Iterator<Item = Self> {
-        // dirty way to get the ItemTreeRc:
-        let item_tree = WindowInner::from_pub(component.window()).component();
-        let result =
-            search_item(&item_tree, |elem| elem.accessible_label().is_some_and(|x| x == label));
+        let mut result = Vec::new();
+        Self::visit_elements::<()>(component, |elem| {
+            if elem.accessible_label().is_some_and(|x| x == label) {
+                result.push(elem);
+            }
+            ControlFlow::Continue(())
+        });
         result.into_iter()
     }
 
@@ -87,16 +143,7 @@ impl ElementHandle {
     /// }
     /// ```
     pub fn find_by_element_id(
-        component: &impl i_slint_core::api::ComponentHandle,
-        id: &str,
-    ) -> impl Iterator<Item = Self> {
-        // dirty way to get the ItemTreeRc:
-        let item_tree = WindowInner::from_pub(component.window()).component();
-        Self::find_by_element_id_with_tree(&item_tree, id)
-    }
-
-    pub(crate) fn find_by_element_id_with_tree(
-        item_tree: &ItemTreeRc,
+        component: &impl ElementRoot,
         id: &str,
     ) -> impl Iterator<Item = Self> {
         let mut id_split = id.split("::");
@@ -104,18 +151,18 @@ impl ElementHandle {
         let local_id = id_split.next();
         let root_base = if local_id == Some("root") { type_name } else { None };
 
-        let result = search_item(&item_tree, |elem| {
+        let mut result = Vec::new();
+        Self::visit_elements::<()>(component, |elem| {
             if elem.id().unwrap() == id {
-                return true;
-            }
-            if let Some(root_base) = root_base {
-                if elem.type_name().unwrap() == root_base {
-                    return true;
+                result.push(elem);
+            } else if let Some(root_base) = root_base {
+                if elem.type_name().unwrap() == root_base
+                    || elem.bases().unwrap().any(|base| base == root_base)
+                {
+                    result.push(elem);
                 }
-                elem.bases().unwrap().any(|base| base == root_base)
-            } else {
-                false
             }
+            ControlFlow::Continue(())
         });
         result.into_iter()
     }
@@ -123,25 +170,24 @@ impl ElementHandle {
     /// This function searches through the entire tree of elements of `component`, looks for
     /// elements with given type name.
     pub fn find_by_element_type_name(
-        component: &impl i_slint_core::api::ComponentHandle,
+        component: &impl ElementRoot,
         type_name: &str,
     ) -> impl Iterator<Item = Self> {
-        // dirty way to get the ItemTreeRc:
-        let item_tree = WindowInner::from_pub(component.window()).component();
-        Self::find_by_element_type_name_with_tree(&item_tree, type_name)
-    }
-
-    pub(crate) fn find_by_element_type_name_with_tree(
-        item_tree: &ItemTreeRc,
-        type_name: &str,
-    ) -> impl Iterator<Item = Self> {
-        let result = search_item(&item_tree, |elem| {
-            if elem.type_name().unwrap() == type_name {
-                return true;
+        let mut result = Vec::new();
+        Self::visit_elements::<()>(component, |elem| {
+            if elem.type_name().unwrap() == type_name
+                || elem.bases().unwrap().any(|tn| tn == type_name)
+            {
+                result.push(elem);
             }
-            elem.bases().unwrap().any(|tn| tn == type_name)
+            ControlFlow::Continue(())
         });
         result.into_iter()
+    }
+
+    /// Returns true if the element still exists in the in UI and is valid to access; false otherwise.
+    pub fn is_valid(&self) -> bool {
+        self.item.upgrade().is_some()
     }
 
     /// Returns the element's qualified id. Returns None if the element is not valid anymore or the
@@ -264,6 +310,12 @@ impl ElementHandle {
         })
     }
 
+    /// Returns the value of the element's `accessible-role` property, if present. Use this property to
+    /// locate elements by their type/role, i.e. buttons, checkboxes, etc.
+    pub fn accessible_role(&self) -> Option<crate::AccessibleRole> {
+        self.item.upgrade().map(|item| item.accessible_role())
+    }
+
     /// Invokes the default accessible action on the element. For example a `MyButton` element might declare
     /// an accessible default action that simulates a click, as in the following example:
     ///
@@ -282,6 +334,9 @@ impl ElementHandle {
     /// }
     /// ```
     pub fn invoke_accessible_default_action(&self) {
+        if self.element_index != 0 {
+            return;
+        }
         if let Some(item) = self.item.upgrade() {
             item.accessible_action(&AccessibilityAction::Default)
         }
@@ -289,14 +344,30 @@ impl ElementHandle {
 
     /// Returns the value of the element's `accessible-value` property, if present.
     pub fn accessible_value(&self) -> Option<SharedString> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item
             .upgrade()
             .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Value))
     }
 
+    /// Returns the value of the element's `accessible-placeholder-text` property, if present.
+    pub fn accessible_placeholder_text(&self) -> Option<SharedString> {
+        if self.element_index != 0 {
+            return None;
+        }
+        self.item.upgrade().and_then(|item| {
+            item.accessible_string_property(AccessibleStringProperty::PlaceholderText)
+        })
+    }
+
     /// Sets the value of the element's `accessible-value` property. Note that you can only set this
     /// property if it is declared in your Slint code.
     pub fn set_accessible_value(&self, value: impl Into<SharedString>) {
+        if self.element_index != 0 {
+            return;
+        }
         if let Some(item) = self.item.upgrade() {
             item.accessible_action(&AccessibilityAction::SetValue(value.into()))
         }
@@ -304,6 +375,9 @@ impl ElementHandle {
 
     /// Returns the value of the element's `accessible-value-maximum` property, if present.
     pub fn accessible_value_maximum(&self) -> Option<f32> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item.upgrade().and_then(|item| {
             item.accessible_string_property(AccessibleStringProperty::ValueMaximum)
                 .and_then(|item| item.parse().ok())
@@ -312,6 +386,9 @@ impl ElementHandle {
 
     /// Returns the value of the element's `accessible-value-minimum` property, if present.
     pub fn accessible_value_minimum(&self) -> Option<f32> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item.upgrade().and_then(|item| {
             item.accessible_string_property(AccessibleStringProperty::ValueMinimum)
                 .and_then(|item| item.parse().ok())
@@ -320,6 +397,9 @@ impl ElementHandle {
 
     /// Returns the value of the element's `accessible-value-step` property, if present.
     pub fn accessible_value_step(&self) -> Option<f32> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item.upgrade().and_then(|item| {
             item.accessible_string_property(AccessibleStringProperty::ValueStep)
                 .and_then(|item| item.parse().ok())
@@ -328,6 +408,9 @@ impl ElementHandle {
 
     /// Returns the value of the `accessible-label` property, if present.
     pub fn accessible_label(&self) -> Option<SharedString> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item
             .upgrade()
             .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Label))
@@ -335,6 +418,9 @@ impl ElementHandle {
 
     /// Returns the value of the `accessible-description` property, if present
     pub fn accessible_description(&self) -> Option<SharedString> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item
             .upgrade()
             .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Description))
@@ -342,6 +428,9 @@ impl ElementHandle {
 
     /// Returns the value of the `accessible-checked` property, if present
     pub fn accessible_checked(&self) -> Option<bool> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item
             .upgrade()
             .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Checked))
@@ -350,6 +439,9 @@ impl ElementHandle {
 
     /// Returns the value of the `accessible-checkable` property, if present
     pub fn accessible_checkable(&self) -> Option<bool> {
+        if self.element_index != 0 {
+            return None;
+        }
         self.item
             .upgrade()
             .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Checkable))
@@ -384,6 +476,9 @@ impl ElementHandle {
     /// Invokes the element's `accessible-action-increment` callback, if declared. On widgets such as spinboxes, this
     /// typically increments the value.
     pub fn invoke_accessible_increment_action(&self) {
+        if self.element_index != 0 {
+            return;
+        }
         if let Some(item) = self.item.upgrade() {
             item.accessible_action(&AccessibilityAction::Increment)
         }
@@ -392,10 +487,135 @@ impl ElementHandle {
     /// Invokes the element's `accessible-action-decrement` callback, if declared. On widgets such as spinboxes, this
     /// typically decrements the value.
     pub fn invoke_accessible_decrement_action(&self) {
+        if self.element_index != 0 {
+            return;
+        }
         if let Some(item) = self.item.upgrade() {
             item.accessible_action(&AccessibilityAction::Decrement)
         }
     }
+
+    /// Simulates a single click (or touch tap) on the element at its center point with the
+    /// specified button.
+    pub async fn single_click(&self, button: i_slint_core::platform::PointerEventButton) {
+        let Some(item) = self.item.upgrade() else { return };
+        let Some(window_adapter) = item.window_adapter() else { return };
+        let window = window_adapter.window();
+
+        let item_pos = self.absolute_position();
+        let item_size = self.size();
+        let position = LogicalPosition::new(
+            item_pos.x + item_size.width / 2.,
+            item_pos.y + item_size.height / 2.,
+        );
+
+        window.dispatch_event(i_slint_core::platform::WindowEvent::PointerMoved { position });
+        window.dispatch_event(i_slint_core::platform::WindowEvent::PointerPressed {
+            position,
+            button,
+        });
+
+        wait_for(std::time::Duration::from_millis(50)).await;
+
+        window_adapter.window().dispatch_event(
+            i_slint_core::platform::WindowEvent::PointerReleased { position, button },
+        );
+    }
+
+    /// Simulates a double click (or touch tap) on the element at its center point.
+    pub async fn double_click(&self, button: i_slint_core::platform::PointerEventButton) {
+        let Ok(click_interval) = i_slint_core::with_platform(
+            || Err(i_slint_core::platform::PlatformError::NoPlatform),
+            |platform| Ok(platform.click_interval()),
+        ) else {
+            return;
+        };
+        let Some(duration_recognized_as_double_click) =
+            click_interval.checked_sub(std::time::Duration::from_millis(10))
+        else {
+            return;
+        };
+
+        let Some(single_click_duration) = duration_recognized_as_double_click.checked_div(2) else {
+            return;
+        };
+
+        let Some(item) = self.item.upgrade() else { return };
+        let Some(window_adapter) = item.window_adapter() else { return };
+        let window = window_adapter.window();
+
+        let item_pos = self.absolute_position();
+        let item_size = self.size();
+        let position = LogicalPosition::new(
+            item_pos.x + item_size.width / 2.,
+            item_pos.y + item_size.height / 2.,
+        );
+
+        window.dispatch_event(i_slint_core::platform::WindowEvent::PointerMoved { position });
+        window.dispatch_event(i_slint_core::platform::WindowEvent::PointerPressed {
+            position,
+            button,
+        });
+
+        wait_for(single_click_duration).await;
+
+        window.dispatch_event(i_slint_core::platform::WindowEvent::PointerReleased {
+            position,
+            button,
+        });
+        window.dispatch_event(i_slint_core::platform::WindowEvent::PointerPressed {
+            position,
+            button,
+        });
+
+        wait_for(single_click_duration).await;
+
+        window_adapter.window().dispatch_event(
+            i_slint_core::platform::WindowEvent::PointerReleased { position, button },
+        );
+    }
+}
+
+async fn wait_for(duration: std::time::Duration) {
+    enum AsyncTimerState {
+        Starting,
+        Waiting(std::task::Waker),
+        Done,
+    }
+
+    let state = std::rc::Rc::new(std::cell::RefCell::new(AsyncTimerState::Starting));
+
+    std::future::poll_fn(move |context| {
+        let mut current_state = state.borrow_mut();
+        match *current_state {
+            AsyncTimerState::Starting => {
+                *current_state = AsyncTimerState::Waiting(context.waker().clone());
+                let state_clone = state.clone();
+                i_slint_core::timers::Timer::single_shot(duration, move || {
+                    let mut current_state = state_clone.borrow_mut();
+                    match *current_state {
+                        AsyncTimerState::Starting => unreachable!(),
+                        AsyncTimerState::Waiting(ref waker) => {
+                            waker.wake_by_ref();
+                            *current_state = AsyncTimerState::Done;
+                        }
+                        AsyncTimerState::Done => {}
+                    }
+                });
+
+                std::task::Poll::Pending
+            }
+            AsyncTimerState::Waiting(ref existing_waker) => {
+                let new_waker = context.waker();
+                if !existing_waker.will_wake(new_waker) {
+                    *current_state = AsyncTimerState::Waiting(new_waker.clone());
+                }
+                std::task::Poll::Pending
+            }
+            AsyncTimerState::Done => std::task::Poll::Ready(()),
+        }
+    })
+    .await
 }
 
 #[test]
@@ -445,13 +665,22 @@ fn test_conditional() {
     slint::slint! {
         export component App inherits Window {
             in property <bool> condition: false;
-            if condition: dynamic-elem := Rectangle {}
+            if condition: dynamic-elem := Rectangle {
+                accessible-role: text;
+            }
+            visible-element := Rectangle {
+                visible: !condition;
+                inner-element := Text { text: "hello"; }
+            }
         }
     }
 
     let app = App::new().unwrap();
     let mut it = ElementHandle::find_by_element_id(&app, "App::dynamic-elem");
     assert!(it.next().is_none());
+
+    assert_eq!(ElementHandle::find_by_element_id(&app, "App::visible-element").count(), 1);
+    assert_eq!(ElementHandle::find_by_element_id(&app, "App::inner-element").count(), 1);
 
     app.set_condition(true);
 
@@ -462,10 +691,17 @@ fn test_conditional() {
     assert_eq!(elem.id().unwrap(), "App::dynamic-elem");
     assert_eq!(elem.type_name().unwrap(), "Rectangle");
     assert_eq!(elem.bases().unwrap().count(), 0);
+    assert_eq!(elem.accessible_role().unwrap(), crate::AccessibleRole::Text);
+
+    assert_eq!(ElementHandle::find_by_element_id(&app, "App::visible-element").count(), 0);
+    assert_eq!(ElementHandle::find_by_element_id(&app, "App::inner-element").count(), 0);
 
     app.set_condition(false);
 
     // traverse the item tree before testing elem.is_valid()
     assert!(ElementHandle::find_by_element_id(&app, "App::dynamic-elem").next().is_none());
     assert!(!elem.is_valid());
+
+    assert_eq!(ElementHandle::find_by_element_id(&app, "App::visible-element").count(), 1);
+    assert_eq!(ElementHandle::find_by_element_id(&app, "App::inner-element").count(), 1);
 }

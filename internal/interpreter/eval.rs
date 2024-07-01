@@ -6,7 +6,7 @@ use crate::dynamic_item_tree::InstanceRef;
 use core::pin::Pin;
 use corelib::graphics::{GradientStop, LinearGradientBrush, PathElement, RadialGradientBrush};
 use corelib::items::{ColorScheme, ItemRef, PropertyAnimation};
-use corelib::model::{Model, ModelExt, ModelRc};
+use corelib::model::{Model, ModelExt, ModelRc, VecModel};
 use corelib::rtti::AnimatedBindingKind;
 use corelib::{Brush, Color, PathData, SharedString, SharedVector};
 use i_slint_compiler::expression_tree::{
@@ -271,31 +271,21 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                     Ok(Default::default())
                 }
                 i_slint_compiler::expression_tree::ImageReference::AbsolutePath(path) => {
-                    corelib::graphics::Image::load_from_path(std::path::Path::new(path))
-                }
-                i_slint_compiler::expression_tree::ImageReference::EmbeddedData { resource_id, extension } => {
-                    generativity::make_guard!(guard);
-                    let toplevel_instance = match &local_context.component_instance {
-                        ComponentInstance::InstanceRef(instance) => instance.toplevel_instance(guard),
-                        ComponentInstance::GlobalComponent(_) => unimplemented!(),
-                    };
-                    let extra_data = toplevel_instance.description.extra_data_offset.apply(toplevel_instance.as_ref());
-                    let path = extra_data.embedded_file_resources.get().unwrap().get(resource_id).expect("internal error: invalid resource id");
-
-                    let virtual_file = i_slint_compiler::fileaccess::load_file(std::path::Path::new(path)).unwrap();  // embedding pass ensured that the file exists
-
-                    if let (static_path, Some(static_data)) = (virtual_file.canon_path, virtual_file.builtin_contents) {
-                        let virtual_file_extension = static_path.extension().unwrap().to_str().unwrap();
-                        debug_assert_eq!(virtual_file_extension, extension);
-                        Ok(corelib::graphics::load_image_from_embedded_data(
-                            corelib::slice::Slice::from_slice(static_data),
-                            corelib::slice::Slice::from_slice(virtual_file_extension.as_bytes())
-                        ))
+                    let path = std::path::Path::new(path);
+                    if path.starts_with("builtin:/") {
+                        i_slint_compiler::fileaccess::load_file(path).and_then(|virtual_file| virtual_file.builtin_contents).map(|virtual_file| {
+                            let extension = path.extension().unwrap().to_str().unwrap();
+                            corelib::graphics::load_image_from_embedded_data(
+                                corelib::slice::Slice::from_slice(virtual_file),
+                                corelib::slice::Slice::from_slice(extension.as_bytes())
+                            )
+                        }).ok_or_else(Default::default)
                     } else {
-                        corelib::debug_log!("Cannot embed images from disk {}", path);
-                        Ok(corelib::graphics::Image::default())
-
+                        corelib::graphics::Image::load_from_path(path)
                     }
+                }
+                i_slint_compiler::expression_tree::ImageReference::EmbeddedData { .. } => {
+                    todo!()
                 }
                 i_slint_compiler::expression_tree::ImageReference::EmbeddedTexture { .. } => {
                     todo!()
@@ -404,6 +394,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 MinMaxOp::Max => Value::Number(lhs.max(rhs)),
             }
         }
+        Expression::EmptyComponentFactory => Value::ComponentFactory(Default::default())
     }
 }
 
@@ -955,6 +946,50 @@ fn call_builtin_function(
                 panic!("Cannot get the window from a global component")
             }
         },
+        BuiltinFunction::MonthDayCount => {
+            let m: u32 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let y: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            Value::Number(i_slint_core::date_time::month_day_count(m, y).unwrap_or(0) as f64)
+        }
+        BuiltinFunction::MonthOffset => {
+            let m: u32 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let y: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+
+            Value::Number(i_slint_core::date_time::month_offset(m, y) as f64)
+        }
+        BuiltinFunction::FormatDate => {
+            let f: SharedString = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let d: u32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            let m: u32 = eval_expression(&arguments[2], local_context).try_into().unwrap();
+            let y: i32 = eval_expression(&arguments[3], local_context).try_into().unwrap();
+
+            Value::String(i_slint_core::date_time::format_date(&f, d, m, y))
+        }
+        BuiltinFunction::DateNow => Value::Model(ModelRc::new(VecModel::from(
+            i_slint_core::date_time::date_now()
+                .into_iter()
+                .map(|x| Value::Number(x as f64))
+                .collect::<Vec<_>>(),
+        ))),
+        BuiltinFunction::ValidDate => {
+            let d: SharedString = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let f: SharedString = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            Value::Bool(i_slint_core::date_time::parse_date(d.as_str(), f.as_str()).is_some())
+        }
+        BuiltinFunction::ParseDate => {
+            let d: SharedString = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let f: SharedString = eval_expression(&arguments[1], local_context).try_into().unwrap();
+
+            Value::Model(ModelRc::new(
+                i_slint_core::date_time::parse_date(d.as_str(), f.as_str())
+                    .map(|x| {
+                        VecModel::from(
+                            x.into_iter().map(|x| Value::Number(x as f64)).collect::<Vec<_>>(),
+                        )
+                    })
+                    .unwrap_or_default(),
+            ))
+        }
         BuiltinFunction::TextInputFocused => match local_context.component_instance {
             ComponentInstance::InstanceRef(component) => {
                 Value::Bool(component.access_window(|window| window.text_input_focused()) as _)

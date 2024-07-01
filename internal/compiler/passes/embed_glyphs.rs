@@ -22,7 +22,7 @@ struct Font {
 
 #[cfg(target_arch = "wasm32")]
 pub fn embed_glyphs<'a>(
-    _component: &Rc<Component>,
+    _component: &Document,
     _scale_factor: f64,
     _pixel_sizes: Vec<i16>,
     _characters_seen: HashSet<char>,
@@ -34,7 +34,7 @@ pub fn embed_glyphs<'a>(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn embed_glyphs<'a>(
-    component: &Rc<Component>,
+    doc: &Document,
     scale_factor: f64,
     mut pixel_sizes: Vec<i16>,
     mut characters_seen: HashSet<char>,
@@ -43,7 +43,7 @@ pub fn embed_glyphs<'a>(
 ) {
     use crate::diagnostics::Spanned;
 
-    let generic_diag_location = component.root_element.borrow().to_source_location();
+    let generic_diag_location = doc.node.as_ref().map(|n| n.to_source_location());
 
     characters_seen.extend(
         ('a'..='z')
@@ -83,7 +83,7 @@ pub fn embed_glyphs<'a>(
 
         embed_glyphs_with_fontdb(
             &mut fontdb,
-            component,
+            doc,
             pixel_sizes,
             characters_seen,
             all_docs,
@@ -95,12 +95,12 @@ pub fn embed_glyphs<'a>(
 
 fn embed_glyphs_with_fontdb<'a>(
     fontdb: &mut sharedfontdb::FontDatabase,
-    component: &Rc<Component>,
+    doc: &Document,
     pixel_sizes: Vec<i16>,
     characters_seen: HashSet<char>,
     all_docs: impl Iterator<Item = &'a crate::object_tree::Document> + 'a,
     diag: &mut BuildDiagnostics,
-    generic_diag_location: crate::diagnostics::SourceLocation,
+    generic_diag_location: Option<crate::diagnostics::SourceLocation>,
 ) {
     let fallback_fonts = get_fallback_fonts(fontdb);
 
@@ -110,7 +110,7 @@ fn embed_glyphs_with_fontdb<'a>(
     for doc in all_docs {
         for (font_path, import_token) in doc.custom_fonts.iter() {
             let face_count = fontdb.faces().count();
-            if let Err(e) = fontdb.load_font_file(font_path) {
+            if let Err(e) = fontdb.make_mut().load_font_file(font_path) {
                 diag.push_error(format!("Error loading font: {}", e), import_token);
             } else {
                 custom_fonts.extend(fontdb.faces().skip(face_count).map(|info| info.id))
@@ -121,34 +121,25 @@ fn embed_glyphs_with_fontdb<'a>(
     let default_font_ids = if !fontdb.default_font_family_ids.is_empty() {
         fontdb.default_font_family_ids.clone()
     } else {
-        let (family, source_location) = component
-            .root_element
-            .borrow()
-            .bindings
-            .get("default-font-family")
-            .and_then(|binding| match &binding.borrow().expression {
-                Expression::StringLiteral(family) => {
-                    Some((Some(family.clone()), binding.borrow().span.clone()))
+        doc.exported_roots().filter_map(|c| {
+            c.root_element.borrow().bindings.get("default-font-family").and_then(|binding| {
+                match &binding.borrow().expression {
+                    Expression::StringLiteral(family) => {
+                        Some((Some(family.clone()), binding.borrow().span.clone()))
+                    }
+                    _ => None,
                 }
-                _ => None,
             })
-            .unwrap_or_default();
-
-        match fontdb.query_with_family(Default::default(), family.as_deref()) {
-            Some(id) => vec![id],
-            None => {
+        }).filter_map(|(family, source_location)| {
+            fontdb.query_with_family(Default::default(), family.as_deref()).or_else(|| {
                 if let Some(source_location) = source_location {
                     diag.push_error_with_span("could not find font that provides specified family, falling back to Sans-Serif".to_string(), source_location);
                 } else {
-                    diag.push_error(
-                        "internal error: fontdb could not determine a default font for sans-serif"
-                            .to_string(),
-                        &generic_diag_location,
-                    );
+                    diag.push_error("internal error: fontdb could not determine a default font for sans-serif" .to_string(), &generic_diag_location);
                 };
-                return;
-            }
-        }
+                None
+            })
+        }).collect()
     };
 
     let default_font_paths = default_font_ids
@@ -255,8 +246,8 @@ fn embed_glyphs_with_fontdb<'a>(
             return;
         };
 
-        let resource_id = component.embedded_file_resources.borrow().len();
-        component.embedded_file_resources.borrow_mut().insert(
+        let resource_id = doc.embedded_file_resources.borrow().len();
+        doc.embedded_file_resources.borrow_mut().insert(
             path.to_string_lossy().to_string(),
             crate::embedded_resources::EmbeddedResources {
                 id: resource_id,
@@ -264,14 +255,16 @@ fn embed_glyphs_with_fontdb<'a>(
             },
         );
 
-        component.init_code.borrow_mut().font_registration_code.push(Expression::FunctionCall {
-            function: Box::new(Expression::BuiltinFunctionReference(
-                BuiltinFunction::RegisterBitmapFont,
-                None,
-            )),
-            arguments: vec![Expression::NumberLiteral(resource_id as _, Unit::None)],
-            source_location: None,
-        });
+        for c in doc.exported_roots() {
+            c.init_code.borrow_mut().font_registration_code.push(Expression::FunctionCall {
+                function: Box::new(Expression::BuiltinFunctionReference(
+                    BuiltinFunction::RegisterBitmapFont,
+                    None,
+                )),
+                arguments: vec![Expression::NumberLiteral(resource_id as _, Unit::None)],
+                source_location: None,
+            });
+        }
     };
 
     // Make sure to embed the default font first, because that becomes the default at run-time.

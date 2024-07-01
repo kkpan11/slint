@@ -1,12 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-#[cfg(target_arch = "wasm32")]
-use crate::wasm_prelude::*;
-
 use std::collections::HashMap;
-
-use i_slint_compiler::typeloader::TypeLoader;
 
 use crate::common;
 
@@ -174,7 +169,7 @@ pub struct TextEditor {
 impl TextEditor {
     pub fn new(source_file: i_slint_compiler::diagnostics::SourceFile) -> crate::Result<Self> {
         let Some(contents) = source_file.source().map(|s| s.to_string()) else {
-            return Err(format!("Soure file {:?} had no contents set", source_file.path()).into());
+            return Err(format!("Source file {:?} had no contents set", source_file.path()).into());
         };
         Ok(Self {
             source_file,
@@ -203,7 +198,7 @@ impl TextEditor {
         );
 
         if self.contents.len() < adjusted_offset.1 {
-            return Err("Text edit renage is out of bounds".into());
+            return Err("Text edit range is out of bounds".into());
         }
 
         // Book keeping:
@@ -245,50 +240,38 @@ impl TextEditor {
 pub struct EditedText {
     pub url: lsp_types::Url,
     pub contents: String,
-    pub adjustments: TextOffsetAdjustments,
-    pub original_range: (usize, usize),
 }
 
 pub fn apply_workspace_edit(
-    type_loader: &TypeLoader,
+    document_cache: &common::DocumentCache,
     workspace_edit: &lsp_types::WorkspaceEdit,
 ) -> common::Result<Vec<EditedText>> {
     let mut processing = HashMap::new();
 
     for (doc, edit) in EditIterator::new(workspace_edit) {
-        let Ok(path) = doc.uri.to_file_path() else {
-            continue;
-        };
-
         // This is ugly but necessary since the constructor might error out:-/
-        if !processing.contains_key(&path) {
-            let Some(document) = type_loader.get_document(&path) else {
+        if !processing.contains_key(&doc.uri) {
+            let Some(document) = document_cache.get_document(&doc.uri) else {
                 continue;
             };
             let Some(document_node) = &document.node else {
                 continue;
             };
             let editor = TextEditor::new(document_node.source_file.clone())?;
-            processing.insert(path.clone(), editor);
+            processing.insert(doc.uri.clone(), editor);
         }
 
         processing
-            .get_mut(&path)
+            .get_mut(&doc.uri)
             .expect("just added if missing")
             .apply_versioned(edit, doc.version)?;
     }
 
     Ok(processing
         .drain()
-        .filter_map(|(k, v)| {
+        .filter_map(|(url, v)| {
             let edit_result = v.finalize()?;
-            let url = lsp_types::Url::from_file_path(k).ok()?;
-            Some(EditedText {
-                url,
-                contents: edit_result.0,
-                adjustments: edit_result.1,
-                original_range: edit_result.2,
-            })
+            Some(EditedText { url, contents: edit_result.0 })
         })
         .collect())
 }
@@ -304,7 +287,7 @@ fn test_text_offset_adjustments() {
     });
     // insert
     a.add_adjustment(TextOffsetAdjustment { start_offset: 25, end_offset: 25, new_text_length: 1 });
-    // smaller replacment
+    // smaller replacement
     a.add_adjustment(TextOffsetAdjustment { start_offset: 30, end_offset: 40, new_text_length: 5 });
     // longer replacement
     a.add_adjustment(TextOffsetAdjustment {
@@ -336,7 +319,7 @@ fn test_text_offset_adjustments_reverse() {
         end_offset: 60,
         new_text_length: 20,
     });
-    // smaller replacment
+    // smaller replacement
     a.add_adjustment(TextOffsetAdjustment { start_offset: 30, end_offset: 40, new_text_length: 5 });
     // insert
     a.add_adjustment(TextOffsetAdjustment { start_offset: 25, end_offset: 25, new_text_length: 1 });

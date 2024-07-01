@@ -1,7 +1,9 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use std::{cell::RefCell, num::NonZeroU32};
+use std::cell::RefCell;
+use std::num::NonZeroU32;
+use std::rc::Rc;
 
 use glutin::{
     config::GetGlConfig,
@@ -12,7 +14,6 @@ use glutin::{
 };
 use i_slint_core::api::PhysicalSize as PhysicalWindowSize;
 use i_slint_core::{api::GraphicsAPI, platform::PlatformError};
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 
 /// This surface type renders into the given window with OpenGL, using glutin and glow libraries.
 pub struct OpenGLSurface {
@@ -25,8 +26,8 @@ pub struct OpenGLSurface {
 
 impl super::Surface for OpenGLSurface {
     fn new(
-        window_handle: raw_window_handle::WindowHandle<'_>,
-        display_handle: raw_window_handle::DisplayHandle<'_>,
+        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
+        display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
         size: PhysicalWindowSize,
     ) -> Result<Self, PlatformError> {
         let width: std::num::NonZeroU32 = size.width.try_into().map_err(|_| {
@@ -35,6 +36,13 @@ impl super::Surface for OpenGLSurface {
         let height: std::num::NonZeroU32 = size.height.try_into().map_err(|_| {
             format!("Attempting to create window surface with an invalid height: {}", size.height)
         })?;
+
+        let window_handle = window_handle
+            .window_handle()
+            .map_err(|e| format!("error obtaining window handle for skia opengl renderer: {e}"))?;
+        let display_handle = display_handle
+            .display_handle()
+            .map_err(|e| format!("error obtaining display handle for skia opengl renderer: {e}"))?;
 
         let (current_glutin_context, glutin_surface) =
             Self::init_glutin(window_handle, display_handle, width, height)?;
@@ -216,22 +224,19 @@ impl OpenGLSurface {
             } else if #[cfg(not(target_family = "windows"))] {
                 let display_api_preference = glutin::display::DisplayApiPreference::Egl;
             } else {
-                let display_api_preference = glutin::display::DisplayApiPreference::EglThenWgl(Some(_window_handle.raw_window_handle()));
+                let display_api_preference = glutin::display::DisplayApiPreference::EglThenWgl(Some(_window_handle.as_raw()));
             }
         }
 
         let gl_display = unsafe {
-            glutin::display::Display::new(
-                _display_handle.raw_display_handle(),
-                display_api_preference,
-            )
-            .map_err(|glutin_error| {
-                format!(
-                    "Error creating glutin display for native display {:#?}: {}",
-                    _display_handle.raw_display_handle(),
-                    glutin_error
-                )
-            })?
+            glutin::display::Display::new(_display_handle.as_raw(), display_api_preference)
+                .map_err(|glutin_error| {
+                    format!(
+                        "Error creating glutin display for native display {:#?}: {}",
+                        _display_handle.as_raw(),
+                        glutin_error
+                    )
+                })?
         };
 
         let config_template_builder = glutin::config::ConfigTemplateBuilder::new();
@@ -248,8 +253,8 @@ impl OpenGLSurface {
 
         // Upstream advises to use this only on Windows.
         #[cfg(target_family = "windows")]
-        let config_template_builder = config_template_builder
-            .compatible_with_native_window(_window_handle.raw_window_handle());
+        let config_template_builder =
+            config_template_builder.compatible_with_native_window(_window_handle.as_raw());
 
         let config_template = config_template_builder.build();
 
@@ -276,10 +281,10 @@ impl OpenGLSurface {
                     major: gles_major,
                     minor: 0,
                 })))
-                .build(Some(_window_handle.raw_window_handle()));
+                .build(Some(_window_handle.as_raw()));
 
             let fallback_context_attributes =
-                ContextAttributesBuilder::new().build(Some(_window_handle.raw_window_handle()));
+                ContextAttributesBuilder::new().build(Some(_window_handle.as_raw()));
 
             unsafe {
                 gl_display
@@ -292,7 +297,7 @@ impl OpenGLSurface {
         let not_current_gl_context = create_gl_context(3).or_else(|_| create_gl_context(2))?;
 
         let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-            _window_handle.raw_window_handle(),
+            _window_handle.as_raw(),
             width,
             height,
         );
@@ -304,26 +309,26 @@ impl OpenGLSurface {
                 .map_err(|e| format!("Error creating OpenGL window surface: {e}"))?
         };
 
+        let context = not_current_gl_context.make_current(&surface)
+            .map_err(|glutin_error: glutin::error::Error| -> PlatformError {
+                format!("FemtoVG Renderer: Failed to make newly created OpenGL context current: {glutin_error}")
+                .into()
+        })?;
+
         // Align the GL layer to the top-left, so that resizing only invalidates the bottom/right
         // part of the window.
         #[cfg(target_os = "macos")]
         if let raw_window_handle::RawWindowHandle::AppKit(raw_window_handle::AppKitWindowHandle {
             ns_view,
             ..
-        }) = _window_handle.raw_window_handle()
+        }) = _window_handle.as_raw()
         {
             use cocoa::appkit::NSView;
-            let view_id: cocoa::base::id = ns_view as *const _ as *mut _;
+            let view_id: cocoa::base::id = ns_view.as_ptr() as *const _ as *mut _;
             unsafe {
                 NSView::setLayerContentsPlacement(view_id, cocoa::appkit::NSViewLayerContentsPlacement::NSViewLayerContentsPlacementTopLeft)
             }
         }
-
-        let context = not_current_gl_context.make_current(&surface)
-            .map_err(|glutin_error: glutin::error::Error| -> PlatformError {
-                format!("FemtoVG Renderer: Failed to make newly created OpenGL context current: {glutin_error}")
-                .into()
-        })?;
 
         // Sanity check, as all this might succeed on Windows without working GL drivers, but this will fail:
         if context

@@ -62,6 +62,7 @@ impl<'a, Font: AbstractFont> TextLayout<'a, Font> {
         &self,
         text: &str,
         max_width: Option<Font::Length>,
+        text_wrap: TextWrap,
     ) -> (Font::Length, Font::Length)
     where
         Font::Length: core::fmt::Debug,
@@ -70,7 +71,7 @@ impl<'a, Font: AbstractFont> TextLayout<'a, Font> {
         let mut line_count: i16 = 0;
         let shape_buffer = ShapeBuffer::new(self, text);
 
-        for line in TextLineBreaker::<Font>::new(text, &shape_buffer, max_width, None) {
+        for line in TextLineBreaker::<Font>::new(text, &shape_buffer, max_width, None, text_wrap) {
             max_line_width = euclid::approxord::max(max_line_width, line.text_width);
             line_count += 1;
         }
@@ -114,7 +115,7 @@ impl<'a, Font: AbstractFont> TextParagraphLayout<'a, Font> {
         ) -> core::ops::ControlFlow<R>,
         selection: Option<core::ops::Range<usize>>,
     ) -> Result<Font::Length, R> {
-        let wrap = self.wrap == TextWrap::WordWrap;
+        let wrap = self.wrap != TextWrap::NoWrap;
         let elide = self.overflow == TextOverflow::Elide;
         let elide_glyph = if elide {
             self.layout.font.glyph_for_char('…').filter(|glyph| glyph.glyph_id.is_some())
@@ -132,6 +133,7 @@ impl<'a, Font: AbstractFont> TextParagraphLayout<'a, Font> {
                 &shape_buffer,
                 if wrap { Some(self.max_width) } else { None },
                 if elide { Some(self.layout.font.max_lines(self.max_height)) } else { None },
+                self.wrap,
             )
         };
         let mut text_lines = None;

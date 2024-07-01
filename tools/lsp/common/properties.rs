@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::common::{self, Result};
-use crate::language;
 use crate::util;
 
 use i_slint_compiler::diagnostics::{BuildDiagnostics, SourceFileVersion, Spanned};
@@ -12,45 +11,42 @@ use i_slint_compiler::parser::{syntax_nodes, Language, SyntaxKind};
 
 use std::collections::HashSet;
 
-#[cfg(target_arch = "wasm32")]
-use crate::wasm_prelude::*;
-
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
-pub(crate) struct DefinitionInformation {
-    property_definition_range: lsp_types::Range,
-    selection_range: lsp_types::Range,
-    expression_range: lsp_types::Range,
-    expression_value: String,
+pub struct DefinitionInformation {
+    pub property_definition_range: lsp_types::Range,
+    pub selection_range: lsp_types::Range,
+    pub expression_range: lsp_types::Range,
+    pub expression_value: String,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
-pub(crate) struct DeclarationInformation {
-    uri: lsp_types::Url,
-    start_position: lsp_types::Position,
+pub struct DeclarationInformation {
+    pub uri: lsp_types::Url,
+    pub start_position: lsp_types::Position,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
-pub(crate) struct PropertyInformation {
-    name: String,
-    type_name: String,
-    declared_at: Option<DeclarationInformation>,
-    defined_at: Option<DefinitionInformation>, // Range in the elements source file!
-    group: String,
+pub struct PropertyInformation {
+    pub name: String,
+    pub type_name: String,
+    pub declared_at: Option<DeclarationInformation>,
+    pub defined_at: Option<DefinitionInformation>, // Range in the elements source file!
+    pub group: String,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
-pub(crate) struct ElementInformation {
-    id: String,
-    type_name: String,
-    range: Option<lsp_types::Range>,
+pub struct ElementInformation {
+    pub id: String,
+    pub type_name: String,
+    pub range: Option<lsp_types::Range>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
-pub(crate) struct QueryPropertyResponse {
-    properties: Vec<PropertyInformation>,
-    element: Option<ElementInformation>,
-    source_uri: String,
-    source_version: i32,
+pub struct QueryPropertyResponse {
+    pub properties: Vec<PropertyInformation>,
+    pub element: Option<ElementInformation>,
+    pub source_uri: String,
+    pub source_version: i32,
 }
 
 impl QueryPropertyResponse {
@@ -411,7 +407,7 @@ fn find_block_range(element: &common::ElementRcNode) -> Option<lsp_types::Range>
 }
 
 fn get_element_information(element: &common::ElementRcNode) -> ElementInformation {
-    let range = element.with_element_node(|node| util::map_node(node));
+    let range = element.with_decorated_node(|node| util::map_node(&node));
     let e = element.element.borrow();
 
     ElementInformation { id: e.id.clone(), type_name: e.base_type.to_string(), range }
@@ -609,7 +605,7 @@ fn set_binding_on_known_property(
 }
 
 pub fn set_binding(
-    document_cache: &language::DocumentCache,
+    document_cache: &common::DocumentCache,
     uri: &lsp_types::Url,
     version: SourceFileVersion,
     element: &common::ElementRcNode,
@@ -631,7 +627,7 @@ pub fn set_binding(
         let expr_context_info = element.with_element_node(|node| {
             util::ExpressionContextInfo::new(node.clone(), property_name.to_string(), false)
         });
-        util::with_property_lookup_ctx(&document_cache.documents, &expr_context_info, |ctx| {
+        util::with_property_lookup_ctx(document_cache, &expr_context_info, |ctx| {
             let expression =
                 i_slint_compiler::expression_tree::Expression::from_binding_expression_node(
                     expression_node,
@@ -682,7 +678,7 @@ pub fn set_binding(
 
 #[cfg(any(feature = "preview-external", feature = "preview-engine"))]
 pub fn set_bindings(
-    document_cache: &language::DocumentCache,
+    document_cache: &common::DocumentCache,
     uri: lsp_types::Url,
     version: SourceFileVersion,
     element: &common::ElementRcNode,
@@ -724,17 +720,16 @@ pub fn set_bindings(
 
 #[cfg(any(feature = "preview-external", feature = "preview-engine"))]
 fn element_at_source_code_position(
-    dc: &mut language::DocumentCache,
+    document_cache: &common::DocumentCache,
     position: &common::VersionedPosition,
 ) -> Result<common::ElementRcNode> {
-    let file = lsp_types::Url::to_file_path(position.url())
-        .map_err(|_| "Failed to convert URL to file path".to_string())?;
-
-    if &dc.document_version(position.url()) != position.version() {
+    if &document_cache.document_version(position.url()) != position.version() {
         return Err("Document version mismatch.".into());
     }
 
-    let doc = dc.documents.get_document(&file).ok_or_else(|| "Document not found".to_string())?;
+    let doc = document_cache
+        .get_document(position.url())
+        .ok_or_else(|| "Document not found".to_string())?;
 
     let source_file = doc
         .node
@@ -743,21 +738,21 @@ fn element_at_source_code_position(
         .ok_or_else(|| "Document had no node".to_string())?;
     let element_position = util::map_position(&source_file, position.offset().into());
 
-    Ok(language::element_at_position(&dc.documents, position.url(), &element_position).ok_or_else(
-        || format!("No element found at the given start position {:?}", &element_position),
-    )?)
+    Ok(document_cache.element_at_position(position.url(), &element_position).ok_or_else(|| {
+        format!("No element found at the given start position {:?}", &element_position)
+    })?)
 }
 
 #[cfg(any(feature = "preview-external", feature = "preview-engine"))]
 pub fn update_element_properties(
-    ctx: &language::Context,
+    document_cache: &common::DocumentCache,
     position: common::VersionedPosition,
     properties: Vec<common::PropertyChange>,
 ) -> Result<lsp_types::WorkspaceEdit> {
-    let element = element_at_source_code_position(&mut ctx.document_cache.borrow_mut(), &position)?;
+    let element = element_at_source_code_position(document_cache, &position)?;
 
     let (_, e) = set_bindings(
-        &ctx.document_cache.borrow_mut(),
+        document_cache,
         position.url().clone(),
         *position.version(),
         &element,
@@ -843,8 +838,6 @@ pub fn remove_binding(
 
 #[cfg(test)]
 mod tests {
-    use i_slint_compiler::typeloader::TypeLoader;
-
     use super::*;
 
     use crate::language::test::{complex_document_cache, loaded_document_cache};
@@ -859,11 +852,11 @@ mod tests {
     fn properties_at_position_in_cache(
         line: u32,
         character: u32,
-        tl: &TypeLoader,
+        document_cache: &common::DocumentCache,
         url: &lsp_types::Url,
     ) -> Option<(common::ElementRcNode, Vec<PropertyInformation>)> {
         let element =
-            language::element_at_position(tl, url, &lsp_types::Position { line, character })?;
+            document_cache.element_at_position(url, &lsp_types::Position { line, character })?;
         Some((element.clone(), get_properties(&element)))
     }
 
@@ -873,12 +866,11 @@ mod tests {
     ) -> Option<(
         common::ElementRcNode,
         Vec<PropertyInformation>,
-        language::DocumentCache,
+        common::DocumentCache,
         lsp_types::Url,
     )> {
         let (dc, url, _) = complex_document_cache();
-        if let Some((e, p)) = properties_at_position_in_cache(line, character, &dc.documents, &url)
-        {
+        if let Some((e, p)) = properties_at_position_in_cache(line, character, &dc, &url) {
             Some((e, p, dc, url))
         } else {
             None
@@ -915,10 +907,9 @@ mod tests {
 
     #[test]
     fn test_element_information() {
-        let (dc, url, _) = complex_document_cache();
+        let (document_cache, url, _) = complex_document_cache();
         let element =
-            language::element_at_position(&dc.documents, &url, &lsp_types::Position::new(33, 4))
-                .unwrap();
+            document_cache.element_at_position(&url, &lsp_types::Position::new(33, 4)).unwrap();
 
         let result = get_element_information(&element);
 
@@ -947,8 +938,7 @@ mod tests {
 
         let (dc, url, _) = loaded_document_cache(content);
 
-        let (_, result) =
-            properties_at_position_in_cache(pos_l, pos_c, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(pos_l, pos_c, &dc, &url).unwrap();
 
         let p = find_property(&result, "text").unwrap();
         let definition = p.defined_at.as_ref().unwrap();
@@ -1410,11 +1400,10 @@ component MainWindow inherits Window {
             "#.to_string());
         let file_url = url.clone();
 
-        let doc = dc.documents.get_document(&crate::language::uri_to_file(&url).unwrap()).unwrap();
+        let doc = dc.get_document(&url).unwrap();
         let source = &doc.node.as_ref().unwrap().source_file;
         let (l, c) = source.line_column(source.source().unwrap().find("base2 :=").unwrap());
-        let (_, result) =
-            properties_at_position_in_cache(l as u32, c as u32, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(l as u32, c as u32, &dc, &url).unwrap();
 
         let foo_property = find_property(&result, "foo").unwrap();
 
@@ -1446,7 +1435,7 @@ component SomeRect inherits Rectangle {
             .to_string(),
         );
 
-        let (_, result) = properties_at_position_in_cache(1, 25, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(1, 25, &dc, &url).unwrap();
 
         let glob_property = find_property(&result, "glob").unwrap();
         assert_eq!(glob_property.type_name, "int");
@@ -1456,7 +1445,7 @@ component SomeRect inherits Rectangle {
         assert_eq!(glob_property.group, "");
         assert_eq!(find_property(&result, "width"), None);
 
-        let (_, result) = properties_at_position_in_cache(8, 4, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(8, 4, &dc, &url).unwrap();
         let abcd_property = find_property(&result, "abcd").unwrap();
         assert_eq!(abcd_property.type_name, "int");
         let declaration = abcd_property.declared_at.as_ref().unwrap();
@@ -1481,7 +1470,7 @@ component SomeRect inherits Rectangle {
         let (dc, url, _) =
             loaded_document_cache(r#"export component Demo { Text { text: } }"#.to_string());
 
-        let (_, result) = properties_at_position_in_cache(0, 35, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(0, 35, &dc, &url).unwrap();
 
         let prop = find_property(&result, "text").unwrap();
         assert_eq!(prop.defined_at, None); // The property has no valid definition at this time
@@ -1505,7 +1494,7 @@ component Base {
             .to_string(),
         );
 
-        let (_, result) = properties_at_position_in_cache(3, 0, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(3, 0, &dc, &url).unwrap();
         assert_eq!(find_property(&result, "a1").unwrap().type_name, "int");
         assert_eq!(
             find_property(&result, "a1").unwrap().defined_at.as_ref().unwrap().expression_value,
@@ -1560,7 +1549,7 @@ component MyComp {
             .to_string(),
         );
 
-        let (_, result) = properties_at_position_in_cache(11, 1, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(11, 1, &dc, &url).unwrap();
         assert_eq!(find_property(&result, "a1").unwrap().type_name, "int");
         assert_eq!(
             find_property(&result, "a1").unwrap().defined_at.as_ref().unwrap().expression_value,
@@ -1611,19 +1600,19 @@ component MyComp {
             .to_string(),
         );
 
-        let (_, result) = properties_at_position_in_cache(3, 0, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(3, 0, &dc, &url).unwrap();
         assert_eq!(find_property(&result, "a").unwrap().type_name, "int");
         assert_eq!(find_property(&result, "b").unwrap().type_name, "int");
         assert_eq!(find_property(&result, "c").unwrap().type_name, "int");
         assert_eq!(find_property(&result, "d").unwrap().type_name, "int");
 
-        let (_, result) = properties_at_position_in_cache(10, 0, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(10, 0, &dc, &url).unwrap();
         assert_eq!(find_property(&result, "a"), None);
         assert_eq!(find_property(&result, "b").unwrap().type_name, "int");
         assert_eq!(find_property(&result, "c"), None);
         assert_eq!(find_property(&result, "d").unwrap().type_name, "int");
 
-        let (_, result) = properties_at_position_in_cache(13, 0, &dc.documents, &url).unwrap();
+        let (_, result) = properties_at_position_in_cache(13, 0, &dc, &url).unwrap();
         assert_eq!(find_property(&result, "enabled").unwrap().type_name, "bool");
         assert_eq!(find_property(&result, "pressed"), None);
     }

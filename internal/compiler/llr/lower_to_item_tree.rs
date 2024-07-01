@@ -14,32 +14,46 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 pub fn lower_to_item_tree(
-    component: &Rc<Component>,
+    document: &crate::object_tree::Document,
     compiler_config: &CompilerConfiguration,
-) -> PublicComponent {
+) -> CompilationUnit {
     let mut state = LoweringState::default();
 
     let mut globals = Vec::new();
-    for g in &component.used_types.borrow().globals {
+    for g in &document.used_types.borrow().globals {
         let count = globals.len();
         globals.push(lower_global(g, count, &mut state));
     }
-    for c in &component.used_types.borrow().sub_components {
-        let sc = lower_sub_component(c, &state, None, &compiler_config);
+    for c in &document.used_types.borrow().sub_components {
+        let sc = lower_sub_component(c, &state, None, compiler_config);
         state.sub_components.insert(ByAddress(c.clone()), sc);
     }
 
-    let sc = lower_sub_component(component, &state, None, &compiler_config);
-    let public_properties = public_properties(component, &sc.mapping, &state);
-    let item_tree = ItemTree {
-        tree: make_tree(&state, &component.root_element, &sc, &[]),
-        root: Rc::try_unwrap(sc.sub_component).unwrap(),
-        parent_context: None,
-    };
-    let root = PublicComponent {
-        item_tree,
+    let public_components = document
+        .exported_roots()
+        .map(|component| {
+            let sc = lower_sub_component(&component, &state, None, compiler_config);
+            let public_properties = public_properties(&component, &sc.mapping, &state);
+            let mut item_tree = ItemTree {
+                tree: make_tree(&state, &component.root_element, &sc, &[]),
+                root: Rc::try_unwrap(sc.sub_component).unwrap(),
+                parent_context: None,
+            };
+            // For C++ codegen, the root component must have the same name as the public component
+            item_tree.root.name = component.id.clone();
+            PublicComponent {
+                item_tree,
+                public_properties,
+                private_properties: component.private_properties.borrow().clone(),
+                name: component.id.clone(),
+            }
+        })
+        .collect();
+
+    let root = CompilationUnit {
+        public_components,
         globals,
-        sub_components: component
+        sub_components: document
             .used_types
             .borrow()
             .sub_components
@@ -48,8 +62,6 @@ pub fn lower_to_item_tree(
                 state.sub_components[&ByAddress(tree_sub_compo.clone())].sub_component.clone()
             })
             .collect(),
-        public_properties,
-        private_properties: component.private_properties.borrow().clone(),
     };
     super::optim_passes::run_passes(&root);
     root
@@ -173,10 +185,8 @@ fn component_id(component: &Rc<Component>) -> String {
         component.root_element.borrow().id.clone()
     } else if component.id.is_empty() {
         format!("Component_{}", component.root_element.borrow().id)
-    } else if component.is_sub_component() {
-        format!("{}_{}", component.id, component.root_element.borrow().id)
     } else {
-        component.id.clone()
+        format!("{}_{}", component.id, component.root_element.borrow().id)
     }
 }
 
@@ -421,7 +431,7 @@ fn lower_sub_component(
         .collect();
     sub_component.repeated = repeated
         .into_iter()
-        .map(|elem| lower_repeated_component(&elem, &ctx, &compiler_config))
+        .map(|elem| lower_repeated_component(&elem, &ctx, compiler_config))
         .collect();
     for s in &mut sub_component.sub_components {
         s.repeater_offset +=
@@ -577,7 +587,7 @@ fn lower_repeated_component(
     let repeated = e.repeated.as_ref().unwrap();
 
     let sc: LoweredSubComponent =
-        lower_sub_component(&component, ctx.state, Some(ctx), &compiler_config);
+        lower_sub_component(&component, ctx.state, Some(ctx), compiler_config);
 
     let geom = component.root_element.borrow().geometry_props.clone().unwrap();
 
@@ -632,7 +642,7 @@ fn lower_popup_component(
     ctx: &ExpressionContext,
     compiler_config: &CompilerConfiguration,
 ) -> ItemTree {
-    let sc = lower_sub_component(component, ctx.state, Some(ctx), &compiler_config);
+    let sc = lower_sub_component(component, ctx.state, Some(ctx), compiler_config);
     ItemTree {
         tree: make_tree(ctx.state, &component.root_element, &sc, &[]),
         root: Rc::try_unwrap(sc.sub_component).unwrap(),

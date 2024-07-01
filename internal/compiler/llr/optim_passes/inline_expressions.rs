@@ -7,7 +7,7 @@
 //! in the calling expression
 
 use crate::expression_tree::BuiltinFunction;
-use crate::llr::{EvaluationContext, Expression, PropertyInfoResult, PublicComponent};
+use crate::llr::{CompilationUnit, EvaluationContext, Expression, PropertyInfoResult};
 
 const PROPERTY_ACCESS_COST: isize = 1000;
 const ALLOC_COST: isize = 700;
@@ -51,6 +51,7 @@ fn expression_cost(exp: &Expression, ctx: &EvaluationContext) -> isize {
         Expression::BoxLayoutFunction { .. } => return isize::MAX,
         Expression::ComputeDialogLayoutCells { .. } => return isize::MAX,
         Expression::MinMax { .. } => 10,
+        Expression::EmptyComponentFactory => 10,
     };
 
     exp.visit(|e| cost = cost.saturating_add(expression_cost(e, ctx)));
@@ -106,6 +107,12 @@ fn builtin_function_cost(function: &BuiltinFunction) -> isize {
         BuiltinFunction::RegisterCustomFontByMemory => isize::MAX,
         BuiltinFunction::RegisterBitmapFont => isize::MAX,
         BuiltinFunction::ColorScheme => isize::MAX,
+        BuiltinFunction::MonthDayCount => isize::MAX,
+        BuiltinFunction::MonthOffset => isize::MAX,
+        BuiltinFunction::FormatDate => isize::MAX,
+        BuiltinFunction::DateNow => isize::MAX,
+        BuiltinFunction::ValidDate => isize::MAX,
+        BuiltinFunction::ParseDate => isize::MAX,
         BuiltinFunction::SetTextInputFocused => PROPERTY_ACCESS_COST,
         BuiltinFunction::TextInputFocused => PROPERTY_ACCESS_COST,
         BuiltinFunction::Translate => 2 * ALLOC_COST + PROPERTY_ACCESS_COST,
@@ -113,7 +120,7 @@ fn builtin_function_cost(function: &BuiltinFunction) -> isize {
     }
 }
 
-pub fn inline_simple_expressions(root: &PublicComponent) {
+pub fn inline_simple_expressions(root: &CompilationUnit) {
     root.for_each_expression(&mut |e, ctx| {
         inline_simple_expressions_in_expression(&mut e.borrow_mut(), ctx)
     })

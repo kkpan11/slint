@@ -4,50 +4,28 @@
 // cSpell: ignore Heade
 
 import { Button, ComboBox, ListView, ScrollView, VerticalBox } from "std-widgets.slint";
-import { ComponentList, ComponentListItem } from "component-list.slint";
-import { DrawArea, DrawAreaMode, DropMark, LayoutKind, Selection } from "draw-area.slint";
+import { Api, ComponentItem } from "api.slint";
+import { ComponentList } from "component-list.slint";
+import { DrawArea, DrawAreaMode } from "draw-area.slint";
 import { HeaderBar } from "header-bar.slint";
-import { Diagnostics, DiagnosticsOverlay } from "diagnostics-overlay.slint";
+import { DiagnosticsOverlay } from "diagnostics-overlay.slint";
+import { PropertyEditor } from "property-editor.slint";
+import { SideBar } from "side-bar.slint";
 
-export { Diagnostics, DropMark, LayoutKind }
+export { Api }
 
 export component PreviewUi inherits Window {
-    in property <[ComponentListItem]> known-components;
-    in property <[Diagnostics]> diagnostics;
-    in property <[Selection]> selections;
-    in-out property <DropMark> drop-mark;
-    in property <[string]> known-styles;
-    in property <bool> experimental: false;
-    in property <bool> show-preview-ui: true;
-    in property <component-factory> preview-area;
-    in property <string> status-text;
-    in-out property <string> current-style;
-    out property <bool> design-mode;
-
-    pure callback can-drop(/* component_type */ string, /* x */ length, /* y */ length, /* on-drop-area */ bool) -> bool;
-    callback drop(/* component_type */ string, /* x */ length, /* y */ length);
-    callback selected-element-resize(/* x */ length, /* y */ length, /* width */ length, /* height */ length);
-    callback selected-element-can-move-to(/* x */ length, /* y */ length, /* mouse-x */ length, /* mouse-y */ length) -> bool;
-    callback selected-element-move(/* x */ length, /* y */ length, /* mouse-x */ length, /* mouse-y */ length);
-    callback selected-element-delete();
-    callback select-at(/* x */ length, /* y */ length, /* enter_component? */ bool);
-    callback select-behind(/* x */ length, /* y */ length, /* enter_component* */ bool, /* reverse */ bool);
-    callback show-document(/* url */ string, /* line */ int, /* column */ int);
-    callback style-changed();
-    callback reselect();
-    callback unselect();
-
     property <length> border: 20px;
-    property <length> side-bar-width: 200px;
+    property <length> side-bar-width: 300px;
 
     title: "Slint Live-Preview";
     icon: @image-url("assets/slint-logo-small-light.png");
 
     VerticalLayout {
-        if (!show-preview-ui): no-ui-drawing-rect := Rectangle {
+        if (!Api.show-preview-ui): no-ui-drawing-rect := Rectangle {
             VerticalLayout {
                 ComponentContainer {
-                    component-factory <=> root.preview-area;
+                    component-factory: Api.preview-area;
                 }
             }
 
@@ -55,13 +33,13 @@ export component PreviewUi inherits Window {
             DiagnosticsOverlay {
                 width: 100%;
                 height: 100%;
-                diagnostics <=> root.diagnostics;
+                diagnostics <=> Api.diagnostics;
                 show-document(url, line, column) => {
-                    root.show-document(url, line, column);
+                    Api.show-document(url, line, column);
                 }
             }
         }
-        if (show-preview-ui): Rectangle {
+        if (Api.show-preview-ui): Rectangle {
             VerticalLayout {
                 HeaderBar {
                     vertical-stretch: 0.0;
@@ -71,7 +49,7 @@ export component PreviewUi inherits Window {
                     pick-button := Button {
                         text: @tr("Design Mode");
                         checkable: true;
-                        checked <=> root.design-mode;
+                        checked <=> Api.design-mode;
                         clicked() => {
                             key-handler.focus();
                         }
@@ -83,85 +61,68 @@ export component PreviewUi inherits Window {
                     }
 
                     style-select := ComboBox {
-                        model: root.known-styles;
-                        current-value <=> current-style;
+                        model: Api.known-styles;
+                        current-value <=> Api.current-style;
                         selected(value) => {
-                            root.style-changed();
+                            Api.style-changed();
                         }
                     }
 
+                    Rectangle {
+                        width: 10px;
+                    }
+
+                    prev-button := Button {
+                        text: "<";
+                        enabled: Api.can-navigate-back;
+                        clicked() => {
+                            Api.navigate(-1);
+                        }
+                    }
+
+                    next-button := Button {
+                        text: ">";
+                        enabled: Api.can-navigate-forward;
+                        clicked() => {
+                            Api.navigate(1);
+                        }
+                    }
+
+                    Rectangle {
+                        width: 10px;
+                    }
+
                     Text {
-                        text: root.status-text;
+                        text: Api.status-text;
                         vertical-alignment: center;
                     }
                 }
 
                 HorizontalLayout {
-                    left-sidebar := Rectangle {
-                        VerticalBox {
-                            ComponentList {
-                                known-components <=> root.known-components;
-                                preview-area-position-x: draw-area.preview-area-position-x;
-                                preview-area-position-y: draw-area.preview-area-position-y;
-                                preview-area-width: draw-area.preview-area-width;
-                                preview-area-height: draw-area.preview-area-height;
+                    left-sidebar := SideBar {
+                        default-width: root.side-bar-width;
+                        show-side-bar: pick-button.checked;
 
-                                can-drop(c, x, y, oda) => {
-                                    return root.can-drop(c, x, y, oda);
-                                }
-                                drop(c, x, y) => {
-                                    root.drop(c, x, y);
-                                }
-                            }
+                        component-list := ComponentList {
+                            preview-area-position-x: draw-area.preview-area-position-x;
+                            preview-area-position-y: draw-area.preview-area-position-y;
+                            preview-area-width: draw-area.preview-area-width;
+                            preview-area-height: draw-area.preview-area-height;
                         }
-
-                        states [
-                            visible when !pick-button.checked: {
-                                width: 0px;
-                            }
-                            hidden when pick-button.checked: {
-                                width: root.side-bar-width;
-                            }
-                        ]
                     }
 
                     draw-area := DrawArea {
-                        design-mode <=> root.design-mode;
-                        diagnostics <=> root.diagnostics;
-                        preview-area <=> root.preview-area;
-                        selections <=> root.selections;
-                        drop-mark <=> root.drop-mark;
-
-                        select-at(x, y, enter_component) => {
-                            root.select-at(x, y, enter_component);
-                        }
-                        selected-element-resize(x, y, w, h) => {
-                            root.selected-element-resize(x, y, w, h);
-                        }
-                        selected-element-can-move-to(x, y, mx, my) => {
-                            root.selected-element-can-move-to(x, y, mx, my);
-                        }
-                        selected-element-move(x, y, mx, my) => {
-                            root.selected-element-move(x, y, mx, my);
-                        }
-                        selected-element-delete() => {
-                            root.selected-element-delete();
-                        }
-                        select-behind(x, y, stay_in_file, reverse) => {
-                            root.select-behind(x, y, stay_in_file, reverse);
-                        }
-                        show-document(url, line, column) => {
-                            root.show-document(url, line, column);
-                        }
-                        unselect() => {
-                            root.unselect();
-                        }
-                        reselect() => {
-                            root.reselect();
-                        }
+                        visible-component <=> component-list.visible-component;
                     }
 
-                    preferred-width: draw-area.preferred-width + root.side-bar-width/* for left-side-bar */;
+                    right-sidebar := SideBar {
+                        default-width: root.side-bar-width;
+                        show-side-bar: pick-button.checked;
+
+                        property-editor := PropertyEditor { }
+                    }
+
+                    preferred-width: draw-area.preferred-width + 2 * root.side-bar-width;
                 }
             }
 
@@ -174,7 +135,7 @@ export component PreviewUi inherits Window {
                         // we do trigger deletion of Elements while errors
                         // are on screen.
                         if draw-area.mode == DrawAreaMode.designing {
-                            root.selected-element-delete();
+                            Api.selected-element-delete();
                         }
                         return accept;
                     }

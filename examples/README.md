@@ -36,13 +36,21 @@ A fictional user interface of a device that monitors energy consumption in a bui
 
 ### [`todo`](./todo)
 
-A simple todo mvc application
+A simple todo application
 
 | `.slint` Design | Rust Source | C++ Source | NodeJS | Online wasm Preview | Open in SlintPad |
 | --- | --- | --- | --- | --- | --- |
 | [`todo.slint`](./todo/ui/todo.slint) | [`main.rs`](./todo/rust/main.rs) | [`main.cpp`](./todo/cpp/main.cpp) | [`main.js`](./todo/node/main.js) | [Online simulation](https://slint.dev/snapshots/master/demos/todo/) | [Preview in Online Code Editor](https://slint.dev/snapshots/master/editor?load_url=https://raw.githubusercontent.com/slint-ui/slint/master/examples/todo/ui/todo.slint) |
 
 ![Screenshot of the Todo Demo](https://slint.dev/resources/todo_screenshot.png "Todo Demo")
+
+### [`todo-mvc`](./todo-mvc)
+
+A simple todo application based on the [Model View Controller](https://en.wikipedia.org/wiki/Model%E2%80%93view%E2%80%93controller) pattern.
+
+| `.slint` Design | Rust Source | Online wasm Preview | Open in SlintPad |
+| --- | --- | --- | --- |
+| [`index.slint`](./todo-mvc/ui/index.slint) | [`main.rs`](./todo/rust/main.rs) | [Online simulation](https://slint.dev/snapshots/master/demos/todo-mvc/) | [Preview in Online Code Editor](https://slint.dev/snapshots/master/editor?load_url=https://raw.githubusercontent.com/slint-ui/slint/master/examples/todo-mvc/ui/index.slint) |
 
 ### [`carousel`](./carousel)
 
@@ -144,6 +152,12 @@ A Rust example that shows how render video frames with FFmpeg within a Slint sce
 | [`scene.slint`](./ffmpeg/scene.slint) | [`main.rs`](./opengl_texture/main.rs) |
 
 ![Screenshot of the FFmpeg Example on macOS](https://github.com/slint-ui/slint/assets/1486/5a1fad32-611a-478e-ab8f-576b4b4bdaf3 "FFmpeg Example")
+
+### [`maps`](./maps)
+
+A rust example that load image tiles asynchronously from OpenStreetMap server and allow panning and zooming
+
+![Screenshot of the maps example](https://github.com/slint-ui/slint/assets/959326/f5e8cca6-dee1-4681-83da-88fec27f9a45 "Maps example")
 
 ### [`virtual keyboard`](./virtual_keyboard)
 

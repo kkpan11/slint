@@ -15,7 +15,6 @@ use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
 pub mod component_catalog;
-pub mod properties;
 pub mod rename_component;
 #[cfg(test)]
 pub mod test;
@@ -475,17 +474,32 @@ impl ElementRcNode {
     }
 }
 
-pub fn create_workspace_edit(uri: Url, version: UrlVersion, edits: Vec<TextEdit>) -> WorkspaceEdit {
+pub fn create_text_document_edit(
+    uri: Url,
+    version: UrlVersion,
+    edits: Vec<TextEdit>,
+) -> lsp_types::TextDocumentEdit {
     let edits = edits
         .into_iter()
         .map(lsp_types::OneOf::Left::<TextEdit, lsp_types::AnnotatedTextEdit>)
         .collect();
-    let edit = lsp_types::TextDocumentEdit {
+    lsp_types::TextDocumentEdit {
         text_document: lsp_types::OptionalVersionedTextDocumentIdentifier { uri, version },
         edits,
-    };
-    let changes = lsp_types::DocumentChanges::Edits(vec![edit]);
+    }
+}
+
+pub fn create_workspace_edit_from_text_document_edits(
+    edits: Vec<lsp_types::TextDocumentEdit>,
+) -> WorkspaceEdit {
+    let changes = lsp_types::DocumentChanges::Edits(edits);
     WorkspaceEdit { document_changes: Some(changes), ..Default::default() }
+}
+
+pub fn create_workspace_edit(uri: Url, version: UrlVersion, edits: Vec<TextEdit>) -> WorkspaceEdit {
+    create_workspace_edit_from_text_document_edits(vec![create_text_document_edit(
+        uri, version, edits,
+    )])
 }
 
 pub fn create_workspace_edit_from_source_file(
@@ -673,6 +687,8 @@ pub enum PreviewToLspMessage {
     RequestState { unused: bool },
     /// Pass a `WorkspaceEdit` on to the editor
     SendWorkspaceEdit { label: Option<String>, edit: lsp_types::WorkspaceEdit },
+    /// Pass a `ShowMessage` notification on to the editor
+    SendShowMessage { message: lsp_types::ShowMessageParams },
 }
 
 /// Information on the Element types available

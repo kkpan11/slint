@@ -6,7 +6,6 @@
 
 1. Unlike the Espressif integration, we don't provide the platform integration as part of the Slint C++ API. In part, this is due to the way Zephyr OS handles device hardware. Zephyr uses the Device Tree to describe the hardware to the device driver model. In order to register an input event call back we need a pointer to a device obtained from a device tree node, and we also need to know how the driver behaves in order to write our callback function. The existing implementation is generic enough to cover the simulator and display shield drivers. A more general solution could be investigated in the future;
 2. Double buffering is not supported as neither the simulator or the hardware used for testing reported it as supported;
-3. The example doesn't use the full screen on the hardware;
 
 ## Prerequisites
 
@@ -45,10 +44,10 @@ Before you can run this example, make sure you have done the following:
    ```bash
    # If Slint source is already checked out (this adds the Zephyr source next to the Slint source):
    cd ..
-   west init -l --mf examples/printerdemo_mcu/zephyr/west.yaml ./slint
+   west init -l --mf examples/printerdemo/zephyr/west.yaml ./slint
 
    # If you do not have Slint source yet (this checks out Slint and Zephyr source into slint-zephyr):
-   west init -m https://github.com/slint-ui/slint --mr zephyr --mf examples/printerdemo_mcu/zephyr/west.yaml slint-zephyr
+   west init -m https://github.com/slint-ui/slint --mr zephyr --mf examples/printerdemo/zephyr/west.yaml slint-zephyr
    cd slint-zephyr
 
    # Checkout the repositories:
@@ -75,7 +74,7 @@ Once you have the prerequisites, navigate to this directory and execute the foll
 
 ```bash
 # Build
-west build -b native_sim/native/64 -p always slint/examples/printerdemo_mcu/zephyr
+west build -b native_sim/native/64 -p always slint/examples/printerdemo/zephyr
 
 # Run
 ./build/zephyr/zephyr.exe
@@ -89,7 +88,7 @@ This sample has been tested on the [NXP MIMXRT1170-EVKB](https://docs.zephyrproj
 
 ```bash
 # Build
-west build -b mimxrt1170_evk@B/mimxrt1176/cm7 -p always slint/examples/printerdemo_mcu/zephyr -- -DSHIELD=rk055hdmipi4ma0 -DCMAKE_BUILD_TYPE=Release
+west build -b mimxrt1170_evk@B/mimxrt1176/cm7 -p always slint/examples/printerdemo/zephyr -- -DSHIELD=rk055hdmipi4ma0 -DCMAKE_BUILD_TYPE=Release
 
 # Flash
 west flash

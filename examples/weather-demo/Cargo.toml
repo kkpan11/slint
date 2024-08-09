@@ -3,7 +3,7 @@
 
 [package]
 name = "weather-demo"
-version = "1.7.1"
+version = "1.7.2"
 authors = ["FELGO GmbH <contact@felgo.com>"]
 edition = "2021"
 build = "build.rs"
@@ -45,7 +45,6 @@ open_weather = ["dep:openweather_sdk", "dep:openssl"]
 
 # Android-activity / wasm support
 [lib]
-name="weather_demo_lib"
 crate-type = ["lib", "cdylib"]
 path = "src/lib.rs"
 

@@ -10,7 +10,7 @@ mod semantic_tokens;
 #[cfg(test)]
 pub mod test;
 
-use crate::common::{self, properties, DocumentCache, Result};
+use crate::common::{self, DocumentCache};
 use crate::util;
 
 #[cfg(target_arch = "wasm32")]
@@ -38,18 +38,12 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
 
-const QUERY_PROPERTIES_COMMAND: &str = "slint/queryProperties";
-const REMOVE_BINDING_COMMAND: &str = "slint/removeBinding";
 const SHOW_PREVIEW_COMMAND: &str = "slint/showPreview";
-const SET_BINDING_COMMAND: &str = "slint/setBinding";
 
 fn command_list() -> Vec<String> {
     vec![
-        QUERY_PROPERTIES_COMMAND.into(),
-        REMOVE_BINDING_COMMAND.into(),
         #[cfg(any(feature = "preview-builtin", feature = "preview-external"))]
         SHOW_PREVIEW_COMMAND.into(),
-        SET_BINDING_COMMAND.into(),
     ]
 }
 
@@ -99,6 +93,38 @@ pub struct Context {
     pub to_show: RefCell<Option<common::PreviewComponent>>,
 }
 
+/// An error from a LSP request
+pub struct LspError {
+    pub code: LspErrorCode,
+    pub message: String,
+}
+
+/// The code of a LspError. Correspond to the lsp_server::ErrorCode
+pub enum LspErrorCode {
+    /// Invalid method parameter(s).
+    InvalidParameter,
+    /// Internal JSON-RPC error.
+    #[allow(unused)]
+    InternalError,
+
+    /// A request failed but it was syntactically correct, e.g the
+    /// method name was known and the parameters were valid. The error
+    /// message should contain human readable information about why
+    /// the request failed.
+    RequestFailed,
+
+    /// The server detected that the content of a document got
+    /// modified outside normal conditions. A server should
+    /// NOT send this error code if it detects a content change
+    /// in it unprocessed messages. The result even computed
+    /// on an older state might still be useful for the client.
+    ///
+    /// If a client decides that a result is not of any use anymore
+    /// the client should cancel the request.
+    #[allow(unused)]
+    ContentModified = -32801,
+}
+
 #[derive(Default)]
 pub struct RequestHandler(
     pub  HashMap<
@@ -107,7 +133,8 @@ pub struct RequestHandler(
             dyn Fn(
                 serde_json::Value,
                 Rc<Context>,
-            ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>>>>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<serde_json::Value, LspError>>>>,
         >,
     >,
 );
@@ -115,7 +142,7 @@ pub struct RequestHandler(
 impl RequestHandler {
     pub fn register<
         R: lsp_types::request::Request,
-        Fut: Future<Output = Result<R::Result>> + 'static,
+        Fut: Future<Output = std::result::Result<R::Result, LspError>> + 'static,
     >(
         &mut self,
         handler: fn(R::Params, Rc<Context>) -> Fut,
@@ -126,8 +153,10 @@ impl RequestHandler {
             R::METHOD,
             Box::new(move |value, ctx| {
                 Box::pin(async move {
-                    let params = serde_json::from_value(value)
-                        .map_err(|e| format!("error when deserializing request: {e:?}"))?;
+                    let params = serde_json::from_value(value).map_err(|e| LspError {
+                        code: LspErrorCode::InvalidParameter,
+                        message: format!("error when deserializing request: {e:?}"),
+                    })?;
                     handler(params, ctx).await.map(|x| serde_json::to_value(x).unwrap())
                 })
             }),
@@ -252,20 +281,11 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
             });
         Ok(result)
     });
-    rh.register::<ExecuteCommand, _>(|params, ctx| async move {
+    rh.register::<ExecuteCommand, _>(|params, _ctx| async move {
         if params.command.as_str() == SHOW_PREVIEW_COMMAND {
             #[cfg(any(feature = "preview-builtin", feature = "preview-external"))]
-            show_preview_command(&params.arguments, &ctx)?;
+            show_preview_command(&params.arguments, &_ctx)?;
             return Ok(None::<serde_json::Value>);
-        }
-        if params.command.as_str() == QUERY_PROPERTIES_COMMAND {
-            return Ok(Some(query_properties_command(&params.arguments, &ctx)?));
-        }
-        if params.command.as_str() == SET_BINDING_COMMAND {
-            return Ok(Some(set_binding_command(&params.arguments, &ctx).await?));
-        }
-        if params.command.as_str() == REMOVE_BINDING_COMMAND {
-            return Ok(Some(remove_binding_command(&params.arguments, &ctx).await?));
         }
         Ok(None::<serde_json::Value>)
     });
@@ -309,11 +329,11 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
         let document_cache = &mut ctx.document_cache.borrow_mut();
         Ok(semantic_tokens::get_semantic_tokens(document_cache, &params.text_document))
     });
-    rh.register::<DocumentHighlightRequest, _>(|_params, ctx| async move {
+    rh.register::<DocumentHighlightRequest, _>(|params, ctx| async move {
         let document_cache = &mut ctx.document_cache.borrow_mut();
-        let uri = _params.text_document_position_params.text_document.uri;
+        let uri = params.text_document_position_params.text_document.uri;
         if let Some((tk, offset)) =
-            token_descr(document_cache, &uri, &_params.text_document_position_params.position)
+            token_descr(document_cache, &uri, &params.text_document_position_params.position)
         {
             let p = tk.parent();
             if p.kind() == SyntaxKind::QualifiedName
@@ -373,11 +393,21 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
                         &params.new_name,
                     )
                     .map(Some)
+                    .map_err(|e| LspError {
+                        code: LspErrorCode::RequestFailed,
+                        message: e.to_string(),
+                    })
                 }
-                _ => Err("This symbol cannot be renamed.".into()),
+                _ => Err(LspError {
+                    code: LspErrorCode::RequestFailed,
+                    message: "This symbol cannot be renamed.".into(),
+                }),
             }
         } else {
-            Err("This symbol cannot be renamed.".into())
+            Err(LspError {
+                code: LspErrorCode::RequestFailed,
+                message: "This symbol cannot be renamed.".into(),
+            })
         }
     });
     rh.register::<PrepareRenameRequest, _>(|params, ctx| async move {
@@ -404,16 +434,41 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
     });
 }
 
+/// extract the parameter at given index. name is used in the error
 #[cfg(any(feature = "preview-builtin", feature = "preview-external"))]
-pub fn show_preview_command(params: &[serde_json::Value], ctx: &Rc<Context>) -> Result<()> {
+fn extract_param<T: serde::de::DeserializeOwned>(
+    params: &[serde_json::Value],
+    index: usize,
+    name: &str,
+) -> Result<T, LspError> {
+    let p = params.get(index).ok_or_else(|| LspError {
+        code: LspErrorCode::InvalidParameter,
+        message: format!("{} parameter is missing", name),
+    })?;
+    serde_json::from_value(p.clone()).map_err(|e| LspError {
+        code: LspErrorCode::InvalidParameter,
+        message: format!("{} parameter is invalid: {}", name, e),
+    })
+}
+
+#[cfg(any(feature = "preview-builtin", feature = "preview-external"))]
+pub fn show_preview_command(
+    params: &[serde_json::Value],
+    ctx: &Rc<Context>,
+) -> Result<(), LspError> {
     let document_cache = &mut ctx.document_cache.borrow_mut();
     let config = document_cache.compiler_configuration();
 
-    let e = || "InvalidParameter";
+    let url: Url = extract_param(params, 0, "url")?;
 
-    let url: Url = serde_json::from_value(params.first().ok_or_else(e)?.clone())?;
     // Normalize the URL to make sure it is encoded the same way as what the preview expect from other URLs
-    let url = Url::from_file_path(common::uri_to_file(&url).ok_or_else(e)?).map_err(|_| e())?;
+    let url =
+        common::uri_to_file(&url).and_then(|u| Url::from_file_path(u).ok()).ok_or_else(|| {
+            LspError {
+                code: LspErrorCode::InvalidParameter,
+                message: "invalid document url".into(),
+            }
+        })?;
 
     let component =
         params.get(1).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(|v| v.to_string());
@@ -427,210 +482,6 @@ pub fn show_preview_command(params: &[serde_json::Value], ctx: &Rc<Context>) -> 
     ctx.server_notifier.send_message_to_preview(common::LspToPreviewMessage::ShowPreview(c));
 
     Ok(())
-}
-
-pub fn query_properties_command(
-    params: &[serde_json::Value],
-    ctx: &Rc<Context>,
-) -> Result<serde_json::Value> {
-    let document_cache = &mut ctx.document_cache.borrow_mut();
-
-    let text_document_uri = serde_json::from_value::<lsp_types::TextDocumentIdentifier>(
-        params.first().ok_or("No text document provided")?.clone(),
-    )?
-    .uri;
-    let position = serde_json::from_value::<lsp_types::Position>(
-        params.get(1).ok_or("No position provided")?.clone(),
-    )?;
-
-    let source_version = if let Some(v) = document_cache.document_version(&text_document_uri) {
-        Some(v)
-    } else {
-        return Ok(serde_json::to_value(properties::QueryPropertyResponse::no_element_response(
-            text_document_uri.to_string(),
-            -1,
-        ))
-        .expect("Failed to serialize none-element property query result!"));
-    };
-
-    if let Some(element) = document_cache.element_at_position(&text_document_uri, &position) {
-        properties::query_properties(&text_document_uri, source_version, &element)
-            .map(|r| serde_json::to_value(r).expect("Failed to serialize property query result!"))
-    } else {
-        Ok(serde_json::to_value(properties::QueryPropertyResponse::no_element_response(
-            text_document_uri.to_string(),
-            source_version.unwrap_or(i32::MIN),
-        ))
-        .expect("Failed to serialize none-element property query result!"))
-    }
-}
-
-pub async fn set_binding_command(
-    params: &[serde_json::Value],
-    ctx: &Rc<Context>,
-) -> Result<serde_json::Value> {
-    let text_document = serde_json::from_value::<lsp_types::OptionalVersionedTextDocumentIdentifier>(
-        params.first().ok_or("No text document provided")?.clone(),
-    )?;
-    let element_range = serde_json::from_value::<lsp_types::Range>(
-        params.get(1).ok_or("No element range provided")?.clone(),
-    )?;
-    let property_name = serde_json::from_value::<String>(
-        params.get(2).ok_or("No property name provided")?.clone(),
-    )?;
-    let new_expression =
-        serde_json::from_value::<String>(params.get(3).ok_or("No expression provided")?.clone())?;
-    let dry_run = {
-        if let Some(p) = params.get(4) {
-            serde_json::from_value::<bool>(p.clone())
-        } else {
-            Ok(true)
-        }
-    }?;
-
-    let (result, edit) = {
-        let document_cache = &mut ctx.document_cache.borrow_mut();
-        let uri = text_document.uri;
-        let version = document_cache.document_version(&uri);
-        if let Some(source_version) = text_document.version {
-            if let Some(current_version) = version {
-                if current_version != source_version {
-                    return Err(
-                        "Document version mismatch. Please refresh your property information"
-                            .into(),
-                    );
-                }
-            } else {
-                return Err(format!("Document with uri {uri} not found in cache").into());
-            }
-        }
-
-        let element =
-            document_cache.element_at_position(&uri, &element_range.start).ok_or_else(|| {
-                format!("No element found at the given start position {:?}", &element_range.start)
-            })?;
-
-        let node_range =
-            element.with_element_node(|node| util::map_node(node)).ok_or("Failed to map node")?;
-
-        if node_range.start != element_range.start {
-            return Err(format!(
-                "Element found, but does not start at the expected place (){:?} != {:?}).",
-                node_range.start, element_range.start
-            )
-            .into());
-        }
-        if node_range.end != element_range.end {
-            return Err(format!(
-                "Element found, but does not end at the expected place (){:?} != {:?}).",
-                node_range.end, element_range.end
-            )
-            .into());
-        }
-
-        properties::set_binding(
-            document_cache,
-            &uri,
-            version,
-            &element,
-            &property_name,
-            new_expression,
-        )?
-    };
-
-    if !dry_run {
-        if let Some(edit) = edit {
-            let response = ctx
-                .server_notifier
-                .send_request::<lsp_types::request::ApplyWorkspaceEdit>(
-                    lsp_types::ApplyWorkspaceEditParams { label: Some("set binding".into()), edit },
-                )?
-                .await?;
-            if !response.applied {
-                return Err(response
-                    .failure_reason
-                    .unwrap_or("Operation failed, no specific reason given".into())
-                    .into());
-            }
-        }
-    }
-
-    Ok(serde_json::to_value(result).expect("Failed to serialize set_binding result!"))
-}
-
-pub async fn remove_binding_command(
-    params: &[serde_json::Value],
-    ctx: &Rc<Context>,
-) -> Result<serde_json::Value> {
-    let text_document = serde_json::from_value::<lsp_types::OptionalVersionedTextDocumentIdentifier>(
-        params.first().ok_or("No text document provided")?.clone(),
-    )?;
-    let element_range = serde_json::from_value::<lsp_types::Range>(
-        params.get(1).ok_or("No element range provided")?.clone(),
-    )?;
-    let property_name = serde_json::from_value::<String>(
-        params.get(2).ok_or("No property name provided")?.clone(),
-    )?;
-
-    let edit = {
-        let document_cache = &mut ctx.document_cache.borrow_mut();
-        let uri = text_document.uri;
-        let version = document_cache.document_version(&uri);
-
-        if let Some(source_version) = text_document.version {
-            if let Some(current_version) = version {
-                if current_version != source_version {
-                    return Err(
-                        "Document version mismatch. Please refresh your property information"
-                            .into(),
-                    );
-                }
-            } else {
-                return Err(format!("Document with uri {uri} not found in cache").into());
-            }
-        }
-
-        let element =
-            document_cache.element_at_position(&uri, &element_range.start).ok_or_else(|| {
-                format!("No element found at the given start position {:?}", &element_range.start)
-            })?;
-
-        let node_range =
-            element.with_element_node(|node| util::map_node(node)).ok_or("Failed to map node")?;
-
-        if node_range.start != element_range.start {
-            return Err(format!(
-                "Element found, but does not start at the expected place (){:?} != {:?}).",
-                node_range.start, element_range.start
-            )
-            .into());
-        }
-        if node_range.end != element_range.end {
-            return Err(format!(
-                "Element found, but does not end at the expected place (){:?} != {:?}).",
-                node_range.end, element_range.end
-            )
-            .into());
-        }
-
-        properties::remove_binding(uri, version, &element, &property_name)?
-    };
-
-    let response = ctx
-        .server_notifier
-        .send_request::<lsp_types::request::ApplyWorkspaceEdit>(
-            lsp_types::ApplyWorkspaceEditParams { label: Some("set binding".into()), edit },
-        )?
-        .await?;
-
-    if !response.applied {
-        return Err(response
-            .failure_reason
-            .unwrap_or("Operation failed, no specific reason given".into())
-            .into());
-    }
-
-    Ok(serde_json::to_value(()).expect("Failed to serialize ()!"))
 }
 
 pub(crate) async fn reload_document_impl(
@@ -687,7 +538,7 @@ pub async fn reload_document(
     url: lsp_types::Url,
     version: Option<i32>,
     document_cache: &mut DocumentCache,
-) -> Result<()> {
+) -> common::Result<()> {
     let lsp_diags =
         reload_document_impl(Some(ctx), content, url.clone(), version, document_cache).await;
 
@@ -1179,7 +1030,7 @@ fn find_element_id_for_highlight(
     None
 }
 
-pub async fn load_configuration(ctx: &Context) -> Result<()> {
+pub async fn load_configuration(ctx: &Context) -> common::Result<()> {
     if !ctx
         .init_param
         .capabilities

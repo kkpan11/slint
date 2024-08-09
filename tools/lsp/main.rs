@@ -158,7 +158,7 @@ impl ServerNotifier {
             let _ = self.send_notification::<common::LspToPreviewMessage>(message);
         } else {
             #[cfg(feature = "preview-builtin")]
-            preview::lsp_to_preview_message(message, self);
+            preview::lsp_to_preview_message(message);
         }
     }
 
@@ -178,8 +178,13 @@ impl RequestHandler {
                     .send(Message::Response(Response::new_ok(request.id, r)))?,
                 Err(e) => ctx.server_notifier.sender.send(Message::Response(Response::new_err(
                     request.id,
-                    ErrorCode::InternalError as i32,
-                    e.to_string(),
+                    match e.code {
+                        LspErrorCode::InvalidParameter => ErrorCode::InvalidParams as i32,
+                        LspErrorCode::InternalError => ErrorCode::InternalError as i32,
+                        LspErrorCode::RequestFailed => ErrorCode::RequestFailed as i32,
+                        LspErrorCode::ContentModified => ErrorCode::ContentModified as i32,
+                    },
+                    e.message,
                 )))?,
             };
         } else {
@@ -278,6 +283,9 @@ fn main_loop(connection: Connection, init_param: InitializeParams, cli_args: Cli
         #[cfg(feature = "preview-engine")]
         preview_to_lsp_sender,
     };
+
+    #[cfg(feature = "preview-builtin")]
+    preview::set_server_notifier(server_notifier.clone());
 
     let mut compiler_config =
         CompilerConfiguration::new(i_slint_compiler::generator::OutputFormat::Interpreter);
@@ -418,7 +426,23 @@ async fn handle_notification(req: lsp_server::Notification, ctx: &Rc<Context>) -
 
         #[cfg(any(feature = "preview-builtin", feature = "preview-external"))]
         "slint/showPreview" => {
-            language::show_preview_command(req.params.as_array().map_or(&[], |x| x.as_slice()), ctx)
+            match language::show_preview_command(
+                req.params.as_array().map_or(&[], |x| x.as_slice()),
+                ctx,
+            ) {
+                Ok(()) => Ok(()),
+                Err(e) => match e.code {
+                    LspErrorCode::RequestFailed => ctx
+                        .server_notifier
+                        .send_notification::<lsp_types::notification::ShowMessage>(
+                        lsp_types::ShowMessageParams {
+                            typ: lsp_types::MessageType::ERROR,
+                            message: e.message,
+                        },
+                    ),
+                    _ => Err(e.message.into()),
+                },
+            }
         }
 
         // Messages from the WASM preview come in as notifications sent by the "editor":
@@ -489,6 +513,10 @@ async fn handle_preview_to_lsp_message(
         }
         M::SendWorkspaceEdit { label, edit } => {
             let _ = send_workspace_edit(ctx.server_notifier.clone(), label, Ok(edit)).await;
+        }
+        M::SendShowMessage { message } => {
+            ctx.server_notifier
+                .send_notification::<lsp_types::notification::ShowMessage>(message)?;
         }
     }
     Ok(())

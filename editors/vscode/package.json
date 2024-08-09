@@ -3,7 +3,7 @@
   "displayName": "Slint",
   "description": "Slint language support, featuring auto-completion, go-to definition, refactoring, syntax coloration, and a live preview and editing of Slint GUIs. Slint is a lightweight cross-platform native GUI framework for Rust, C++, JavaScript, and Python.",
   "keywords": ["Slint", "GUI", "UI", "HMI", "Qt/QML Alternative", "live preview", "drag-and-drop editor"],
-  "version": "1.7.1",
+  "version": "1.7.2",
   "publisher": "Slint",
   "icon": "extension-logo.png",
   "license": "GPL-3.0",
@@ -19,9 +19,6 @@
   ],
   "qna": "https://github.com/slint-ui/slint/discussions/categories/q-a",
   "activationEvents": [
-    "onCommand:slint.showPreview",
-    "onCommand:slint.reload",
-    "onLanguage:slint",
     "onLanguage:rust",
     "onWebviewPanel:slint-preview",
     "workspaceContains:{**/CMakeLists.txt,**/Cargo.toml,**/*.slint}"
@@ -39,7 +36,11 @@
           ".slint",
           ".60"
         ],
-        "configuration": "language-configuration.json"
+        "configuration": "language-configuration.json",
+        "icon": {
+          "light": "slint-file-icon.svg",
+          "dark": "slint-file-icon.svg"
+        }
       }
     ],
     "grammars": [

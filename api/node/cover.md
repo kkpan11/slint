@@ -6,7 +6,7 @@
 [Slint](https://slint.dev/) is a UI toolkit that supports different programming languages.
 Slint-node is the integration with [Node.js](https://nodejs.org/en) and [Deno](https://deno.com).
 
-To get started you use the [walk-through tutorial](https://slint.dev/docs/quickstart/node).
+To get started you use the [walk-through tutorial](https://slint.dev/docs/slint/src/quickstart).
 We also have a [Getting Started Template](https://github.com/slint-ui/slint-nodejs-template) repository with
 the code of a minimal application using Slint that can be used as a starting point to your program.
 
@@ -34,8 +34,7 @@ To use Slint with Deno, ensure the following programs are installed:
 Slint-node comes with pre-built binaries for macOS, Linux, and Windows. If you'd like to use Slint-node on a system
 without pre-built binaries, you need to additional software:
 
-  * **[Rust compiler](https://www.rust-lang.org/tools/install)** (1.73 or newer)
-  * Depending on your operating system, you may need additional components. For a list of required system libraries,
+  * **[Rust compiler](https://www.rust-lang.org/tools/install)** (1.77 or newer) * Depending on your operating system, you may need additional components. For a list of required system libraries,
     see <https://github.com/slint-ui/slint/blob/master/docs/building.md#prerequisites>.
 
 ## Getting Started (Node.js)
@@ -203,7 +202,7 @@ instance.name = "Joe";
 
 ### Setting and Invoking Callbacks
 
-[Callbacks](src/language/syntax/callbacks) declared in `.slint` files are visible as JavaScript function properties on the component instance. Invoke them
+[Callbacks](../slint/src/language/syntax/callbacks) declared in `.slint` files are visible as JavaScript function properties on the component instance. Invoke them
 as function to invoke the callback, and assign JavaScript functions to set the callback handler.
 
 **`ui/my-component.slint`**
@@ -259,7 +258,7 @@ The types used for properties in .slint design markup each translate to specific
 [Array properties](../slint/src/language/syntax/types#arrays-and-models) can be set from JavaScript by passing
 either `Array` objects or implementations of the {@link Model} interface.
 
-When passing a JavaScript `Array` object, the contents of the array are copied. Any changes to the JavaScript afterwards will not be visible on the Slint side. 
+When passing a JavaScript `Array` object, the contents of the array are copied. Any changes to the JavaScript afterwards will not be visible on the Slint side.
 
 Reading a Slint array property from JavaScript will always return a @{link Model}.
 
@@ -271,6 +270,75 @@ component.model = component.model.concat(4);
 ```
 
 Another option is to set an object that implements the {@link Model} interface.
+
+### structs
+
+An exported struct can be created either by defing of an object literal or by using the new keyword.
+
+**`my-component.slint`**
+
+```
+export struct Person {
+    name: string,
+    age: int
+}
+
+export component MyComponent inherits Window {
+    in-out property <Person> person;
+}
+```
+
+**`main.js`**
+
+```js
+
+import * as slint from "slint-ui";
+
+let ui = slint.loadFile("my-component.slint");
+let component = new ui.MyComponent();
+
+// object literal
+component.person = { name: "Peter", age: 22 };
+
+// new keyword (sets property values to default e.g. '' for string)
+component.person = new ui.Person();
+
+// new keyword with parameters
+component.person = new ui.Person({ name: "Tim", age: 30 });
+```
+
+### enums
+
+A value of an exported enum can be set as string or by usign the value from the exported enum.
+
+**`my-component.slint`**
+
+```
+export enum Position {
+    top,
+    bottom
+}
+
+export component MyComponent inherits Window {
+    in-out property <Position> position;
+}
+```
+
+**`main.js`**
+
+```js
+
+import * as slint from "slint-ui";
+
+let ui = slint.loadFile("my-component.slint");
+let component = new ui.MyComponent();
+
+// set enum value as string
+component.position = "top";
+
+// use the value of the enum
+component.position = ui.Position.bottom;
+```
 
 ### Globals
 
@@ -303,3 +371,4 @@ component.Logic.to_upper_case = (str) => {
 
 **Note**: Global singletons are instantiated once per component. When declaring multiple components for `export` to JavaScript,
 each instance will have their own instance of associated globals singletons.
+

@@ -619,7 +619,7 @@ fn call_builtin_function(
                         )
                     },
                     popup.close_on_click,
-                    component.self_weak().get().unwrap().clone(),
+                    enclosing_component.self_weak().get().unwrap().clone(),
                     component.window_adapter(),
                     &parent_item,
                 );
@@ -733,14 +733,52 @@ fn call_builtin_function(
                         "paste" => textinput.paste(&window_adapter, &item_rc),
                         _ => panic!("internal: Unknown member function {name} called on TextInput"),
                     }
+                } else if let Some(s) =
+                    ItemRef::downcast_pin::<corelib::items::SwipeGestureHandler>(item_ref)
+                {
+                    match &*name {
+                        "cancel" => s.cancel(&window_adapter, &item_rc),
+                        _ => panic!("internal: Unknown member function {name} called on SwipeGestureHandler"),
+                    }
                 } else {
                     panic!(
-                        "internal error: member function called on element that doesn't have it: {}",
+                        "internal error: member function {name} called on element that doesn't have it: {}",
                         elem.borrow().original_name()
                     )
                 }
 
                 Value::Void
+            } else {
+                panic!("internal error: argument to set-selection-offsetsAll must be an element")
+            }
+        }
+        BuiltinFunction::ItemFontMetrics => {
+            if arguments.len() != 1 {
+                panic!(
+                    "internal error: incorrect argument count to item font metrics function call"
+                )
+            }
+            let component = match local_context.component_instance {
+                ComponentInstance::InstanceRef(c) => c,
+                ComponentInstance::GlobalComponent(_) => {
+                    panic!(
+                        "Cannot invoke item font metrics function on item from a global component"
+                    )
+                }
+            };
+            if let Expression::ElementReference(element) = &arguments[0] {
+                generativity::make_guard!(guard);
+
+                let elem = element.upgrade().unwrap();
+                let enclosing_component = enclosing_component_for_element(&elem, component, guard);
+                let description = enclosing_component.description;
+                let item_info = &description.items[elem.borrow().id.as_str()];
+                let item_ref =
+                    unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
+                let window_adapter = component.window_adapter();
+                let metrics =
+                    i_slint_core::items::slint_text_item_fontmetrics(&window_adapter, item_ref);
+                metrics.into()
             } else {
                 panic!("internal error: argument to set-selection-offsetsAll must be an element")
             }

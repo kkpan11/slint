@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 use crate::expression_tree::BuiltinFunction;
 use crate::langtype::{
-    BuiltinElement, BuiltinPropertyInfo, ElementType, Enumeration, PropertyLookupResult, Type,
+    BuiltinElement, BuiltinPropertyDefault, BuiltinPropertyInfo, ElementType, Enumeration,
+    PropertyLookupResult, Type,
 };
 use crate::object_tree::{Component, PropertyVisibility};
 use crate::typeloader;
@@ -131,8 +132,8 @@ pub fn reserved_properties() -> impl Iterator<Item = (&'static str, Type, Proper
         .chain(RESERVED_OTHER_PROPERTIES.iter())
         .chain(RESERVED_DROP_SHADOW_PROPERTIES.iter())
         .chain(RESERVED_ROTATION_PROPERTIES.iter())
-        .map(|(k, v)| (*k, v.clone(), PropertyVisibility::InOut))
-        .chain(reserved_accessibility_properties().map(|(k, v)| (k, v, PropertyVisibility::InOut)))
+        .map(|(k, v)| (*k, v.clone(), PropertyVisibility::Input))
+        .chain(reserved_accessibility_properties().map(|(k, v)| (k, v, PropertyVisibility::Input)))
         .chain(
             RESERVED_GRIDLAYOUT_PROPERTIES
                 .iter()
@@ -370,6 +371,25 @@ impl TypeRegister {
             _ => unreachable!(),
         };
 
+        let font_metrics_prop = crate::langtype::BuiltinPropertyInfo {
+            ty: font_metrics_type(),
+            property_visibility: PropertyVisibility::Output,
+            default_value: BuiltinPropertyDefault::Fn(|elem| {
+                crate::expression_tree::Expression::FunctionCall {
+                    function: Box::new(
+                        crate::expression_tree::Expression::BuiltinFunctionReference(
+                            BuiltinFunction::ItemFontMetrics,
+                            None,
+                        ),
+                    ),
+                    arguments: vec![crate::expression_tree::Expression::ElementReference(
+                        Rc::downgrade(elem),
+                    )],
+                    source_location: None,
+                }
+            }),
+        };
+
         match &mut register.elements.get_mut("TextInput").unwrap() {
             ElementType::Builtin(ref mut b) => {
                 let text_input = Rc::get_mut(b).unwrap();
@@ -380,6 +400,18 @@ impl TypeRegister {
                 text_input
                     .member_functions
                     .insert("set-selection-offsets".into(), BuiltinFunction::SetSelectionOffsets);
+                text_input
+                    .reserved_properties
+                    .insert("font-metrics".into(), font_metrics_prop.clone());
+            }
+
+            _ => unreachable!(),
+        };
+
+        match &mut register.elements.get_mut("Text").unwrap() {
+            ElementType::Builtin(ref mut b) => {
+                let text = Rc::get_mut(b).unwrap();
+                text.reserved_properties.insert("font-metrics".into(), font_metrics_prop);
             }
 
             _ => unreachable!(),
@@ -544,6 +576,21 @@ pub fn logical_point_type() -> Type {
         ])
         .collect(),
         name: Some("slint::LogicalPosition".into()),
+        node: None,
+        rust_attributes: None,
+    }
+}
+
+pub fn font_metrics_type() -> Type {
+    Type::Struct {
+        fields: IntoIterator::into_iter([
+            ("ascent".to_string(), Type::LogicalLength),
+            ("descent".to_string(), Type::LogicalLength),
+            ("x-height".to_string(), Type::LogicalLength),
+            ("cap-height".to_string(), Type::LogicalLength),
+        ])
+        .collect(),
+        name: Some("slint::private_api::FontMetrics".into()),
         node: None,
         rust_attributes: None,
     }

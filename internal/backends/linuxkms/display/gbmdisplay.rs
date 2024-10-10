@@ -83,22 +83,26 @@ impl super::Presenter for GbmDisplay {
         &self,
         ready_for_next_animation_frame: Box<dyn FnOnce()>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Workaround for https://github.com/Smithay/gbm.rs/issues/36:
-        // call gbm_sys::gbm_surface_lock_front_buffer() directly to
-        // avoid the failing has_free_buffers() check on the vivante gbm backend.
-
         let mut front_buffer = unsafe {
             self.gbm_surface
                 .lock_front_buffer()
                 .map_err(|err| format!("Could not lock gbm front buffer: {err}"))?
         };
 
-        // TODO: support modifiers
-        // TODO: consider falling back to the old non-planar API
+        // Same logic as in drm-rs' `add_planar_framebuffer` function.
+        let flags = if drm::buffer::PlanarBuffer::modifier(&front_buffer)
+            .filter(|modifier| !matches!(modifier, drm::buffer::DrmModifier::Invalid))
+            .is_some()
+        {
+            drm::control::FbCmd2Flags::MODIFIERS
+        } else {
+            drm::control::FbCmd2Flags::empty()
+        };
+
         let fb = self
             .drm_output
             .drm_device
-            .add_planar_framebuffer(&front_buffer, drm::control::FbCmd2Flags::empty())
+            .add_planar_framebuffer(&front_buffer, flags)
             .map_err(|e| format!("Error adding gbm buffer as framebuffer: {e}"))?;
 
         front_buffer

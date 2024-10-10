@@ -1442,20 +1442,6 @@ fn generate_item_tree(
         quote!(sp::Rc::new(SharedGlobals::new(sp::VRc::downgrade(&self_dyn_rc))))
     };
 
-    let new_end = if let Some(parent_ctx) = parent_ctx {
-        if parent_ctx.repeater_index.is_some() {
-            // Repeaters run their user_init() code from RepeatedItemTree::init() after update() initialized model_data/index.
-            quote!(core::result::Result::Ok(self_rc))
-        } else {
-            quote! {
-                Self::user_init(sp::VRc::map(self_rc.clone(), |x| x));
-                core::result::Result::Ok(self_rc)
-            }
-        }
-    } else {
-        quote!(core::result::Result::Ok(self_rc))
-    };
-
     let embedding_function = if parent_ctx.is_some() {
         quote!(todo!("Components written in Rust can not get embedded yet."))
     } else {
@@ -1546,7 +1532,7 @@ fn generate_item_tree(
                 let globals = #globals;
                 sp::register_item_tree(&self_dyn_rc, globals.maybe_window_adapter_impl());
                 Self::init(sp::VRc::map(self_rc.clone(), |x| x), globals, 0, 1);
-                #new_end
+                core::result::Result::Ok(self_rc)
             }
 
             fn item_tree() -> &'static [sp::ItemTreeNode] {
@@ -2139,10 +2125,9 @@ fn compile_expression(expr: &Expression, ctx: &EvaluationContext) -> TokenStream
                         Expression::Array { element_ty: _, values, as_model: _ } => values
                             .iter()
                             .map(|path_elem_expr|
-                                // Close{} is a struct with no fields in markup, and PathElement::Close has no fields, so map to an empty token stream
-                                // and thus later just unit type, which can convert into PathElement::Close.
+                                // Close{} is a struct with no fields in markup, and PathElement::Close has no fields
                                 if matches!(path_elem_expr, Expression::Struct { ty: Type::Struct { fields, .. }, .. } if fields.is_empty()) {
-                                    ::core::default::Default::default()
+                                    quote!(sp::PathElement::Close)
                                 } else {
                                     compile_expression(path_elem_expr, ctx)
                                 }
@@ -2659,6 +2644,19 @@ fn compile_builtin_function_call(
                 panic!("internal error: invalid args to ItemMemberFunction {:?}", arguments)
             }
         }
+        BuiltinFunction::ItemFontMetrics => {
+            if let [Expression::PropertyReference(pr)] = arguments {
+                let item = access_member(pr, ctx);
+                let window_adapter_tokens = access_window_adapter_field(ctx);
+                item.then(|item| {
+                    quote!(
+                        #item.font_metrics(#window_adapter_tokens)
+                    )
+                })
+            } else {
+                panic!("internal error: invalid args to ItemMemberFunction {:?}", arguments)
+            }
+        }
         BuiltinFunction::ImplicitLayoutInfo(orient) => {
             if let [Expression::PropertyReference(pr)] = arguments {
                 let item = access_member(pr, ctx);
@@ -3000,7 +2998,7 @@ fn generate_resources(doc: &Document) -> Vec<TokenStream> {
                     )
                 },
                 #[cfg(feature = "software-renderer")]
-                crate::embedded_resources::EmbeddedResourcesKind::BitmapFontData(crate::embedded_resources::BitmapFont { family_name, character_map, units_per_em, ascent, descent, glyphs, weight, italic }) => {
+                crate::embedded_resources::EmbeddedResourcesKind::BitmapFontData(crate::embedded_resources::BitmapFont { family_name, character_map, units_per_em, ascent, descent, x_height, cap_height, glyphs, weight, italic }) => {
 
                     let character_map_size = character_map.len();
 
@@ -3052,6 +3050,8 @@ fn generate_resources(doc: &Document) -> Vec<TokenStream> {
                             units_per_em: #units_per_em,
                             ascent: #ascent,
                             descent: #descent,
+                            x_height: #x_height,
+                            cap_height: #cap_height,
                             glyphs: sp::Slice::from_slice({
                                 #link_section
                                 static GLYPHS : [sp::BitmapGlyphs; #glyphs_size] = [#(#glyphs),*];

@@ -12,6 +12,8 @@ use std::rc::Weak;
 
 #[cfg(target_arch = "wasm32")]
 use winit::platform::web::WindowExtWebSys;
+#[cfg(target_family = "windows")]
+use winit::platform::windows::WindowExtWindows;
 
 use crate::renderer::WinitCompatibleRenderer;
 use const_field_offset::FieldOffsets;
@@ -135,7 +137,11 @@ impl WinitWindowOrNone {
 
     fn set_window_icon(&self, icon: Option<winit::window::Icon>) {
         match self {
-            Self::HasWindow(window) => window.set_window_icon(icon),
+            Self::HasWindow(window) => {
+                #[cfg(target_family = "windows")]
+                window.set_taskbar_icon(icon.as_ref().cloned());
+                window.set_window_icon(icon);
+            }
             Self::None(attributes) => attributes.borrow_mut().window_icon = icon,
         }
     }
@@ -1027,6 +1033,14 @@ impl WindowAdapterInternal for WinitWindowAdapter {
             .borrow()
             .as_window()
             .map_or(Err(raw_window_handle::HandleError::Unavailable), |window| Ok(window))
+    }
+
+    fn bring_to_front(&self) -> Result<(), PlatformError> {
+        if let Some(winit_window) = self.winit_window_or_none.borrow().as_window() {
+            winit_window.set_minimized(false);
+            winit_window.focus_window();
+        }
+        Ok(())
     }
 }
 

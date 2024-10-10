@@ -3,7 +3,33 @@
 # Changelog
 All notable changes to this project are documented in this file.
 
-## 1.8.0 - Unreleased
+## 1.9.0 - Unreleased
+
+### General
+
+ - Minumum Supported Rust Version (MSRC) is 1.77
+ - femtovg: Avoid artifacts of texture sampling with accidental wrap-around on texture boundaries
+
+### Slint language
+
+ - Added animation `direction` property. (#6260)
+ - TextInput: fix selection colors not used from style (#6326)
+
+### Widgets
+
+ - Checkbox: fix text color in fluent style (#6239)
+ - LineEdit: fix cursor draws out of bounds (#6243)
+
+### LSP and tooling
+
+ - Bring the window to the front and focus when clicking on "Show preview" in the editor. (#196)
+
+
+### Node API
+
+ - Added support for enums
+
+## 1.8.0 - 2024-09-23
 
 ### Slint language
 
@@ -21,6 +47,7 @@ All notable changes to this project are documented in this file.
  - Path: Fix compiler panic when accessing path.commands in expressions (#5564)
  - The `mod` function was changed to always return a positive value (#6178)
  - Added `AccesssibleRole.list-item` and used it where relevant
+ - Added `PointerEventButton.back` and `PointerEventButton.forward` (#6043)
 
 ### Widgets
 
@@ -40,6 +67,7 @@ All notable changes to this project are documented in this file.
  - Fixed error in generated code with struct containing `percent` value (#5887)
  - Added `JoinHandle::is_finished()` (#6034)
  - Implemented `FromIterator` for `VecModel`
+ - Fixed Timer::set_interval() doesn't work in timer callback (#6141)
 
 ### C++
 
@@ -65,6 +93,7 @@ All notable changes to this project are documented in this file.
  - vscode extension: Added telemetry to report panics of the LSP server.
  - vscode extension: Added "Create New Project" command to start from one of our templates
  - vscode extension: Rename the output tab to from "Slint LSP" to "Slint", and make sure it is always there
+ - slint-viewer: `--save-data`/`--load-data`: support for images with paths. (#6169)
  - Slintpad: Added "about" entry in the menu.
 
 ### Misc
@@ -74,7 +103,9 @@ All notable changes to this project are documented in this file.
  - Fixed colorized tiled images
  - Fixed generated getter and setter of alias properties in globals (#5855)
  - Use `raw-window-metal` to do layer creation in skia
-
+ - Updated Skia library. (NOTE: requires updated MSVC toolchain)
+ - Skia renderer: Improve rendering quality of layers
+ - GridLayout: Fixed panic when rowspan or colspan is 0 (#6181)
 
 ## [1.7.2] - 2024-08-14
 
@@ -1542,3 +1573,4 @@ as well as the [Rust migration guide for the `sixtyfps` crate](api/rs/slint/migr
 [1.7.0]: https://github.com/slint-ui/slint/releases/tag/v1.7.0
 [1.7.1]: https://github.com/slint-ui/slint/releases/tag/v1.7.1
 [1.7.2]: https://github.com/slint-ui/slint/releases/tag/v1.7.2
+[1.8.0]: https://github.com/slint-ui/slint/releases/tag/v1.8.0

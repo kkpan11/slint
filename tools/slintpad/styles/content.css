@@ -165,6 +165,7 @@
 
 .dialog.report_export_url .url .url_text {
     font-family: monospace;
+    overflow-wrap: anywhere;
 }
 
 .dialog.manage_github_dialog .description_area {

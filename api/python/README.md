@@ -48,7 +48,7 @@ pipenv run python main.py
 ## Quick Start
 
 1. Add Slint Python Package Index to your Python project: `pipenv install slint`
-2. Create a file called `appwindow.slint`:
+2. Create a file called `app-window.slint`:
 
 ```slint
 import { Button, VerticalBox } from "std-widgets.slint";
@@ -75,8 +75,8 @@ export component AppWindow inherits Window {
 ```python
 import slint
 
-# slint.loader will look in `sys.path` for `appwindow.slint`.
-class App(slint.loader.appwindow.AppWindow):
+# slint.loader will look in `sys.path` for `app-window.slint`.
+class App(slint.loader.app_window.AppWindow):
     @slint.callback
     def request_increase_value(self):
         self.counter = self.counter + 1
@@ -129,7 +129,8 @@ options:
    Any attribute lookup in `slint.loader` is searched for in `sys.path`. If a directory with the name exists, it is returned as a loader object, and subsequent
    attribute lookups follow the same logic. If the name matches a file with the `.slint` extension, it is automatically loaded with `load_file` and the
    [namespace](https://docs.python.org/3/library/types.html#types.SimpleNamespace) is returned, which contains classes for each exported component that
-   inherits `Window`.
+   inherits `Window`. If the file name contains a dash, like `app-window.slint`, an attribute lookup for `app_window` will
+   first try to locate `app_window.slint` and then fall back to `app-window.slint`.
 
 ### Accessing Properties
 

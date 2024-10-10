@@ -30,6 +30,8 @@ use core::pin::Pin;
 use euclid::num::Zero;
 use vtable::VRcMapped;
 
+pub mod popup;
+
 fn next_focus_item(item: ItemRc) -> ItemRc {
     item.next_focus_item()
 }
@@ -221,6 +223,11 @@ pub trait WindowAdapterInternal {
     ) -> Result<Rc<dyn raw_window_handle_06::HasDisplayHandle>, raw_window_handle_06::HandleError>
     {
         Err(raw_window_handle_06::HandleError::NotSupported)
+    }
+
+    /// Brings the window to the front and focuses it.
+    fn bring_to_front(&self) -> Result<(), PlatformError> {
+        Ok(())
     }
 }
 
@@ -721,13 +728,17 @@ impl WindowInner {
         if self.prevent_focus_change.get() {
             return;
         }
-        if !set_focus {
-            let current_focus_item = self.focus_item.borrow().clone();
-            if let Some(current_focus_item_rc) = current_focus_item.upgrade() {
-                if current_focus_item_rc != *new_focus_item {
-                    // can't clear focus unless called with currently focused item.
+
+        let current_focus_item = self.focus_item.borrow().clone();
+        if let Some(current_focus_item_rc) = current_focus_item.upgrade() {
+            if set_focus {
+                if current_focus_item_rc == *new_focus_item {
+                    // don't send focus out and in even to the same item if focus doesn't change
                     return;
                 }
+            } else if current_focus_item_rc != *new_focus_item {
+                // can't clear focus unless called with currently focused item.
+                return;
             }
         }
 
@@ -1005,10 +1016,17 @@ impl WindowInner {
             .and_then(|x| x.create_popup(LogicalRect::new(position, size)))
         {
             None => {
+                let clip = LogicalRect::new(
+                    LogicalPoint::new(0.0 as crate::Coord, 0.0 as crate::Coord),
+                    self.window_adapter().size().to_logical(self.scale_factor()).to_euclid(),
+                );
+                let rect = popup::place_popup(
+                    popup::Placement::Fixed(LogicalRect::new(position, size)),
+                    &Some(clip),
+                );
                 self.window_adapter().request_redraw();
-                PopupWindowLocation::ChildWindow(position)
+                PopupWindowLocation::ChildWindow(rect.origin)
             }
-
             Some(window_adapter) => {
                 WindowInner::from_pub(window_adapter.window()).set_component(popup_componentrc);
                 PopupWindowLocation::TopLevel(window_adapter)

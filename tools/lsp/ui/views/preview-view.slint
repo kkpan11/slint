@@ -10,6 +10,10 @@ import { Resizer } from "../components/resizer.slint";
 import { Group, GroupHeader } from "../components/group.slint";
 import { StatusLineApi } from "../components/status-line.slint";
 
+global PreviewState {
+    out property <length> minimum-preview-size: 16px;
+}
+
 enum SelectionKind {
     none,
     select_at,
@@ -67,6 +71,10 @@ component SelectionFrame {
     }
 
     if root.interactive && selection.is-primary: Resizer {
+        clicked(x, y, modifiers) => {
+            key-handler.focus();
+        }
+
         double-clicked(x, y, modifiers) => {
             root.select-behind(root.selection.geometry.x + x, root.selection.geometry.y + y, modifiers.control, modifiers.shift);
         }
@@ -129,6 +137,22 @@ component SelectionFrame {
             border-width: 1px;
             background: parent.resizing || parent.moving ? root.selection-color.with-alpha(0.5) : root.selection-color.with-alpha(0.0);
         }
+
+        key-handler := FocusScope {
+            enabled <=> root.interactive;
+
+            init => {
+                self.focus();
+            }
+
+            key-pressed(event) => {
+                if event.text == Key.Delete {
+                    Api.selected-element-delete();
+                    return accept;
+                }
+                reject
+            }
+        }
     }
 
     // Size label:
@@ -151,12 +175,12 @@ component SelectionFrame {
 }
 
 export component PreviewView {
-    in property <[Diagnostics]> diagnostics <=> Api.diagnostics;
-    in property <[Selection]> selections <=> Api.selections;
+    property <[Diagnostics]> diagnostics <=> Api.diagnostics;
+    property <[Selection]> selections <=> Api.selections;
     in property <ComponentItem> visible-component;
-    in property <DropMark> drop-mark <=> Api.drop-mark;
-    in property <component-factory> preview-area <=> Api.preview-area;
-    in property <bool> design-mode <=> Api.design-mode;
+    property <DropMark> drop-mark <=> Api.drop-mark;
+    property <component-factory> preview-area <=> Api.preview-area;
+    out property <bool> design-mode <=> Api.design-mode;
     in-out property <bool> select-mode: false;
 
     out property <bool> preview-visible: preview-area-container.has-component && !diagnostics.diagnostics-open;
@@ -228,32 +252,28 @@ export component PreviewView {
                 y-position: parent.y;
 
                 resize(_, _, w, h) => {
-                    preview-area-container.width = clamp(w, preview-area-container.min-width, preview-area-container.max-width);
-                    preview-area-container.height = clamp(h, preview-area-container.min-height, preview-area-container.max-height);
-                    Api.reselect();
+                    resize-to-preview-constraints(w, h);
                 }
 
                 width: preview-area-container.width;
                 height: preview-area-container.height;
 
-                // Also make a condition that abuses the fact that the init callback
-                // is called every time the condition is dirty, to make sure that the size
-                // is within the bounds.
-                // Query the preview-area to make sure this is evaluated when it changes
                 changed component-factory => {
                     if Api.resize-to-preferred-size {
                         self.target-width = preview-area-container.preferred-width.abs() < 0.5px ? drawing-rect.width - scroll-view.border : preview-area-container.preferred-width;
                         self.target-height = preview-area-container.preferred-height.abs() < 0.5px ? drawing-rect.height - scroll-view.border : preview-area-container.preferred-height;
 
-                        preview-area-container.width = clamp(self.target-width, max(preview-area-container.min-width, 16px), max(preview-area-container.max-width, 16px));
-                        preview-area-container.height = clamp(self.target-height, max(preview-area-container.min-height, 16px), max(preview-area-container.max-height, 16px));
-
+                        resize-to-preview-constraints(self.target-width, self.target-height);
                     } else {
-                        preview-area-container.width = clamp(preview-area-container.width, max(preview-area-container.min-width, 16px), max(preview-area-container.max-width, 16px));
-                        preview-area-container.height = clamp(preview-area-container.height, max(preview-area-container.min-height, 16px),  max(preview-area-container.max-height, 16px));
+                        resize-to-preview-constraints(preview-area-container.width, preview-area-container.height);
                     }
 
                     Api.resize-to-preferred-size = false;
+                }
+
+                function resize-to-preview-constraints(width: length, height: length) {
+                    preview-area-container.width = clamp(width, max(preview-area-container.min-width, PreviewState.minimum-preview-size), max(preview-area-container.max-width, PreviewState.minimum-preview-size));
+                    preview-area-container.height = clamp(height, max(preview-area-container.min-height, PreviewState.minimum-preview-size),  max(preview-area-container.max-height, PreviewState.minimum-preview-size));
                 }
 
                 Rectangle {
@@ -261,7 +281,7 @@ export component PreviewView {
 
                     HorizontalLayout {
                         preview-area-container := ComponentContainer {
-                            property <bool> is-resizable: (self.min-width != self.max-width && self.min-height != self.max-height) && self.has-component;
+                            property <bool> is-resizable: (self.min-width != self.max-width || self.min-height != self.max-height) && self.has-component;
 
                             component-factory: root.preview-area;
 
@@ -274,6 +294,22 @@ export component PreviewView {
                             init => {
                                 self.width = max(self.preferred-width, self.min-width);
                                 self.height = max(self.preferred-height, self.min-height);
+                            }
+
+                            changed min-width => {
+                                main-resizer.resize-to-preview-constraints(self.width, self.height);
+                            }
+
+                            changed max-width => {
+                                main-resizer.resize-to-preview-constraints(self.width, self.height);
+                            }
+
+                            changed width => {
+                                Api.reselect();
+                            }
+
+                            changed height => {
+                                Api.reselect();
                             }
                         }
                     }

@@ -253,18 +253,59 @@ export component Example inherits Window {
 
 ## `GridLayout`
 
-`GridLayout` places its children in a grid. `GridLayout` adds properties to each child: `col`, `row`, `colspan`, `rowspan`.
-These properties must be compile time constants.
-You can control the position of children with `col` and `row`.
-If `col` or `row` aren't specified, they are automatically computed such that the item is next to the previous item, in the same row.
-Alternatively, the item can be put in a `Row` element.
+`GridLayout` places elements on a grid.
+
+Cell elements inside a `GridLayout` obtain the following new properties. Any bindings to these properties must be compile-time constants:
+
+-   **`row`** (_in_ _int_): The index of the element's row within the grid. Setting this property resets the element's column to zero, unless explicitly set.
+-   **`col`** (_in_ _int_): The index of the element's column within the grid. Set this property to override the sequential column assignment (e.g., to skip a column).
+-   **`rowspan`** (_in_ _int_): The number of rows this element should span. (default value: `1`)
+-   **`colspan`** (_in_ _int_): The number of columns this element should span. (default value: `1`)
+
+To implicitly sequentially assign row indices&mdash;just like with `col`&mdash;wrap cell elements in `Row` elements.
+
+The following example creates a 2-by-2 grid with `Row` elements, omitting one cell:
+
+```slint
+import { Button } from "std-widgets.slint";
+export component Foo inherits Window {
+    width: 200px;
+    height: 100px;
+    GridLayout {
+        Row { // children implicitly on row 0
+            Button { col: 1; text: "Top Right"; } // implicit column after this would be 2
+        }
+        Row { // children implicitly on row 1
+            Button { text: "Bottom Left"; }  // implicitly in column 0...
+            Button { text: "Bottom Right"; } // ...and 1
+        }
+    }
+}
+```
+
+The following example creates the same grid using the `row` property. Row indices must be taken care of manually:
+
+```slint
+import { Button } from "std-widgets.slint";
+export component Foo inherits Window {
+    width: 200px;
+    height: 100px;
+    GridLayout {
+        Button { row: 0; col: 1; text: "Top Right"; } // `row: 0;` could even be left out at the start
+        Button { row: 1; text: "Bottom Left"; } // new row, implicitly resets column to 0
+        Button { text: "Bottom Right"; } // same row, sequentially assigned column 1
+    }
+}
+```
+
+`GridLayout` covers its entire surface with cells. Cells are not aligned. The elements constituting the cells will be stretched inside their allocated space, unless their size constraints&mdash;like, e.g., `min-height` or `max-width`&mdash;work against this.
 
 ### Properties
 
 -   **`spacing`** (_in_ _length_): The distance between the elements in the layout.
 -   **`spacing-horizontal`**, **`spacing-vertical`** (_in_ _length_):
-    Set these properties to override the spacing on specific directions.
--   **`padding`** (_in_ _length_): The padding within the layout.
+    Set these properties to override the spacing on specific axes.
+-   **`padding`** (_in_ _length_): The padding around the grid structure as a whole.
 -   **`padding-left`**, **`padding-right`**, **`padding-top`** and **`padding-bottom`** (_in_ _length_):
     Set these properties to override the padding on specific sides.
 
@@ -322,7 +363,7 @@ An `Image` can be used to represent an image loaded from a file.
 -   **`rotation-angle`** (_in_ _angle_), **`rotation-origin-x`** (_in_ _length_), **`rotation-origin-y`** (_in_ _length_):
     Rotates the image by the given angle around the specified origin point. The default origin point is the center of the element.
     When these properties are set, the `Image` can't have children.
--   **`source`** (_in_ _image_): The image to load. Use the [`@image-url("...")` macro](../syntax/types#images) to specify the location of the image.
+-   **`source`** (_in_ _image_): The image to load. Use the [`@image-url("...")` macro](../syntax/types.md#images) to specify the location of the image.
 -   **`source-clip-x`**, **`source-clip-y`**, **`source-clip-width`**, **`source-clip-height`** (_in_ _int_): Properties in source
     image coordinates that define the region of the source image that is rendered. By default the entire source image is visible:
     | Property | Default Binding |
@@ -743,6 +784,7 @@ When not part of a layout, its width or height defaults to 100% of the parent el
 -   **`font-size`** (_in_ _length_): The font size of the text.
 -   **`font-weight`** (_in_ _int_): The weight of the font. The values range from 100 (lightest) to 900 (thickest). 400 is the normal weight.
 -   **`font-italic`** (_in_ _bool_): Whether or not the font face should be drawn italicized or not. (default value: false)
+-   **`font-metrics`** (_out_ _struct [`FontMetrics`](structs.md#fontmetrics)_): The design metrics of the font scaled to the font pixel size used by the element.
 -   **`has-focus`** (_out_ _bool_): `TextInput` sets this to `true` when it's focused. Only then it receives [`KeyEvent`](structs.md#keyevent)s.
 -   **`horizontal-alignment`** (_in_ _enum [`TextHorizontalAlignment`](enums.md#texthorizontalalignment)_): The horizontal alignment of the text.
 -   **`input-type`** (_in_ _enum [`InputType`](enums.md#inputtype)_): Use this to configure `TextInput` for editing special input, such as password fields. (default value: `text`)
@@ -806,6 +848,7 @@ and the text itself.
 -   **`font-size`** (_in_ _length_): The font size of the text.
 -   **`font-weight`** (_in_ _int_): The weight of the font. The values range from 100 (lightest) to 900 (thickest). 400 is the normal weight.
 -   **`font-italic`** (_in_ _bool_): Whether or not the font face should be drawn italicized or not. (default value: false)
+-   **`font-metrics`** (_out_ _struct [`FontMetrics`](structs.md#fontmetrics)_): The design metrics of the font scaled to the font pixel size used by the element.
 -   **`horizontal-alignment`** (_in_ _enum [`TextHorizontalAlignment`](enums.md#texthorizontalalignment)_): The horizontal alignment of the text.
 -   **`letter-spacing`** (_in_ _length_): The letter spacing allows changing the spacing between the glyphs. A positive value increases the spacing and a negative value decreases the distance. (default value: 0)
 -   **`overflow`** (_in_ _enum [`TextOverflow`](enums.md#textoverflow)_): What happens when the text overflows (default value: clip).

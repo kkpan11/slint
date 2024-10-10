@@ -672,6 +672,14 @@ impl RendererSealed for SoftwareRenderer {
         fonts::text_size(font_request, text, max_width, scale_factor, text_wrap)
     }
 
+    fn font_metrics(
+        &self,
+        font_request: crate::graphics::FontRequest,
+        scale_factor: ScaleFactor,
+    ) -> crate::items::FontMetrics {
+        fonts::font_metrics(font_request, scale_factor)
+    }
+
     fn text_input_byte_offset_for_position(
         &self,
         text_input: Pin<&crate::items::TextInput>,
@@ -937,6 +945,7 @@ fn render_window_frame_by_line(
                                     texture,
                                     range_buffer,
                                     extra_left_clip,
+                                    extra_right_clip,
                                 );
                             }
                             SceneCommand::SharedBuffer { shared_buffer_index } => {
@@ -949,6 +958,7 @@ fn render_window_frame_by_line(
                                     &texture,
                                     range_buffer,
                                     extra_left_clip,
+                                    extra_right_clip,
                                 );
                             }
                             SceneCommand::RoundedRectangle { rectangle_index } => {
@@ -1455,7 +1465,7 @@ fn prepare_scene(
     let mut prepare_scene = prepare_scene;
     for rect in dirty_region.iter() {
         prepare_scene.processor.process_rounded_rectangle(
-            rect.to_rect(),
+            euclid::rect(rect.0.x as _, rect.0.y as _, rect.1.width as _, rect.1.height as _),
             RoundedRectangle {
                 radius: BorderRadius::default(),
                 width: Length::new(1),
@@ -1527,13 +1537,14 @@ impl<'a, T: TargetPixel> RenderToBuffer<'a, T> {
     }
 
     fn process_texture_impl(&mut self, geometry: PhysicalRect, texture: SceneTexture<'_>) {
-        self.foreach_ranges(&geometry, |line, buffer, extra_left_clip, _extra_right_clip| {
+        self.foreach_ranges(&geometry, |line, buffer, extra_left_clip, extra_right_clip| {
             draw_functions::draw_texture_line(
                 &geometry,
                 PhysicalLength::new(line),
                 &texture,
                 buffer,
                 extra_left_clip,
+                extra_right_clip,
             );
         });
     }
@@ -2542,7 +2553,7 @@ impl<'a, T: ProcessScene> crate::item_rendering::ItemRenderer for SceneBuilder<'
     }
 
     fn rotate(&mut self, _angle_in_degrees: f32) {
-        todo!()
+        // TODO (#6068)
     }
 
     fn apply_opacity(&mut self, opacity: f32) {

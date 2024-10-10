@@ -121,6 +121,7 @@ export struct PropertyInformation {
     name: string,
     type-name: string,
     value: PropertyValue,
+    display-priority: int,
 }
 
 /// Information on one Property
@@ -182,7 +183,112 @@ export global Api {
 
     // ## Property Editor
     in-out property <ElementInformation> current-element;
-    in-out property <[PropertyGroup]> properties;
+    in-out property <[PropertyGroup]> properties: [
+        {
+            group-name: "geometry",
+            properties: [
+                {
+                    name: "width",
+                    type-name: "length",
+                    value: {
+                        kind: PropertyValueKind.float,
+                        value-float: 100,
+                        visual-items: ["px", "cm", "mm", "in", "pt", "phx"],
+                    }
+                },
+                {
+                    name: "height",
+                    type-name: "length",
+                    value: {
+                        kind: PropertyValueKind.float,
+                        value-float: 200,
+                        visual-items: ["px", "cm", "mm", "in", "pt", "phx"],
+                    }
+                },
+                {
+                    name: "z",
+                    type-name: "float",
+                    value: {
+                        kind: PropertyValueKind.float,
+                        value-float: 10,
+                    }
+                },
+                {
+                    name: "combobox",
+                    type-name: "string",
+                    value: {
+                        kind: PropertyValueKind.enum,
+                        value-int: 1,
+                        default-selection: 0,
+                        visual-items: ["one", "twenty two", "one hundred", "infinite"],
+                    }
+                },
+            ]
+        },
+        {
+            group-name: "Button",
+            properties: [
+                {
+                    name: "text",
+                    type-name: "string",
+                    value: {
+                        is-translatable: true,
+                        kind: PropertyValueKind.string,
+                    }
+                },
+                {
+                    name: "checkable",
+                    type-name: "bool",
+                    value: {
+                        kind: PropertyValueKind.boolean,
+                    }
+                },
+                {
+                    name: "icon",
+                    type-name: "image",
+                    value: {
+                        kind: PropertyValueKind.code,
+                    }
+                },
+                {
+                    name: "color",
+                    type-name: "brush",
+                    value: {
+                        kind: PropertyValueKind.brush,
+                        value-brush: Colors.green,
+                        value-string: "#00ff00"
+                    },
+                },
+                {
+                    name: "a-really-long-named-attribute",
+                    type-name: "float",
+                    value: {
+                        kind: PropertyValueKind.float,
+                        value-float: 10,
+                    }
+                },
+                {
+                    name: "bar",
+                    type-name: "float",
+                    value: {
+                        kind: PropertyValueKind.code,
+                        value-float: 10.5,
+                        code: 10/2,
+                    }
+                },
+                {
+                    name: "baz",
+                    type-name: "float",
+                    value: {
+                        kind: PropertyValueKind.code,
+                        value-float: 10.5,
+                        code: "",
+                    }
+                }
+
+            ]
+        }
+    ];
 
     // # Callbacks
 
@@ -199,45 +305,45 @@ export global Api {
     callback add-new-component();
 
     // Add an existing component
-    pure callback can-drop(/* component-index: */  int, /* x: */ length, /* y: */ length, /* on-drop-area: */ bool) -> bool;
-    callback drop(/* component-index: */ int, /* x: */ length, /* y: */ length);
+    pure callback can-drop(component-index: int, x: length, y: length, on-drop-area: bool) -> bool;
+    callback drop(component-index: int, x: length, y: length);
 
-    callback rename-component(/* old-name: */ string, /* defined-at: */ string, /* new-name: */ string);
+    callback rename-component(old-name: string, defined-at: string, new-name: string);
 
-    callback selected-element-can-move-to(/* x: */ length, /* y: */ length, /* mouse-x: */ length, /* mouse-y: */ length) -> bool;
-    callback selected-element-move(/* x: */ length, /* y: */ length, /* mouse-x: */ length, /* mouse-y: */ length);
+    callback selected-element-can-move-to(x: length, y: length, mouse-x: length, mouse-y: length) -> bool;
+    callback selected-element-move(x: length, y: length, mouse-x: length, mouse-y: length);
 
-    callback selected-element-resize(/* x: */ length, /* y: */ length, /* width: */ length, /* height: */ length);
+    callback selected-element-resize(x: length, y: length, width: length, height: length);
 
     callback selected-element-delete();
 
     // ## Element selection:
-    callback select-at(/* x: */ length, /* y: */ length, /* enter-component: */ bool);
-    callback select-behind(/* x: */ length, /* y: */ length, /* enter-component: */ bool, /* reverse: */ bool);
+    callback select-at(x: length, y: length, enter-component: bool);
+    callback select-behind(x: length, y: length, enter-component: bool, reverse: bool);
     callback reselect();
     callback unselect();
 
     // ## Change Editor:
 
     // Show a conponent in the editor
-    callback show-component(/* name: */ string, /* url: */ string);
+    callback show-component(name: string, url: string);
     // Show a position consisting of `line` and `column` in a `file` in the editor
-    callback show-document(/* file: */ string, /* line: */ int, /* column: */ int);
+    callback show-document(file: string, line: int, column: int);
     // Show a position consisting of `line` and `column` in a `file` in the editor
-    callback show-document-offset-range(/* url: */ string, /* start_offset: */ int, /* end_offset: */ int, /* take-focus: */ bool);
+    callback show-document-offset-range(url: string, start_offset: int, end_offset: int, take-focus: bool);
 
     // ## Drawing Area
     // Preview some other component
-    callback show-preview-for(/* name: */ string, /* url: */ string);
+    callback show-preview-for(name: string, url: string);
     callback reload-preview();
 
     // ## Property Editor
-    pure callback test-code-binding(/* element-url: */ string, /* element-version: */ int, /* element-offset: */ int, /* property-name: */ string, /* property-value: */ string) -> bool;
-    pure callback test-string-binding(/* element-url: */ string, /* element-version: */ int, /* element-offset: */ int, /* property-name: */ string, /* value: */ string, /* is_translatable: */ bool, /* tr_context: */ string, /* tr_plural: */ string, /* tr_plural_expression: */ string) -> bool;
-    callback set-code-binding(/* element-url: */ string, /* element-version: */ int, /* element-offset: */ int, /* property-name: */ string, /* property-value: */ string);
-    callback set-color-binding(/* element-url: */ string, /* element-version: */ int, /* element-offset: */ int, /* property-name: */ string, /* property-value: */ color);
-    callback set-string-binding(/* element-url: */ string, /* element-version: */ int, /* element-offset: */ int, /* property-name: */ string, /* value: */ string, /* is_translatable: */ bool, /* tr_context: */ string, /* tr_plural: */ string, /* tr_plural_exprression: */ string);
+    pure callback test-code-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: string) -> bool;
+    pure callback test-string-binding(element-url: string, element-version: int, element-offset: int, property-name: string, value: string, is_translatable: bool, tr_context: string, tr_plural: string, tr_plural_expression: string) -> bool;
+    callback set-code-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: string);
+    callback set-color-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: color);
+    callback set-string-binding(element-url: string, element-version: int, element-offset: int, property-name: string, value: string, is_translatable: bool, tr_context: string, tr_plural: string, tr_plural_exprression: string);
 
     // Get the property declaration/definition ranges
-    callback property-declaration-ranges(/* property-name: */ string) -> PropertyDeclaration;
+    callback property-declaration-ranges(property-name: string) -> PropertyDeclaration;
 }

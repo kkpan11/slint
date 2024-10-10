@@ -49,7 +49,7 @@ In the next section you will learn how to use the installed library in your appl
 First you need to install the prerequisites:
 
 * Install Rust by following the [Rust Getting Started Guide](https://www.rust-lang.org/learn/get-started). If you already
-  have Rust installed, make sure that it's at least version 1.73 or newer. You can check which version you have installed
+  have Rust installed, make sure that it's at least version 1.77 or newer. You can check which version you have installed
   by running `rustc --version`. Once this is done, you should have the `rustc` compiler and the `cargo` build system installed in your path.
 
 You can either choose to compile Slint from source along with your application or include Slint as an external CMake package.
@@ -185,25 +185,4 @@ cd build
 cmake -DRust_CARGO_TARGET=aarch64-unknown-linux-gnu -DCMAKE_INSTALL_PREFIX=/slint/install/path ..
 cmake --build .
 cmake --install .
-```
-
-#### Microcontrollers
-
-To target a Microcontroller environment, all of the following additional CMake configuration options must be set when compiling Slint:
-
-| Option                                                        | Description                                                          |
-|---------------------------------------------------------------|----------------------------------------------------------------------|
-| `-DSLINT_FEATURE_FREESTANDING=ON`                             | Enables building for environments without a standard library.        |
-| `-DBUILD_SHARED_LIBS=OFF`                                     | Disables shared library support and instead builds Slint statically. |
-| `-DSLINT_FEATURE_RENDERER_SOFTWARE=ON`                        | Enable support for the software renderer.                            |
-| `-DDEFAULT_SLINT_EMBED_RESOURCES=embed-for-software-renderer` | Default to pre-compiling images and fonts.                           |
-
-
-For example, if you're targeting an MCU with a ARM Cortex-M processor, the complete command line for CMake could look like this:
-
-```sh
-cmake -DRust_CARGO_TARGET=thumbv7em-none-eabihf -DSLINT_FEATURE_FREESTANDING=ON
-      -DBUILD_SHARED_LIBS=OFF -DSLINT_FEATURE_RENDERER_SOFTWARE=ON
-      -DDEFAULT_SLINT_EMBED_RESOURCES=embed-for-software-renderer
-      ..
 ```

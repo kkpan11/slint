@@ -13,6 +13,7 @@ SCENARIO("SharedString API")
     slint::SharedString str;
 
     REQUIRE(str.empty());
+    REQUIRE(str.size() == 0);
     REQUIRE(str == "");
     REQUIRE(std::string_view(str.data()) == ""); // this test null termination of data()
 
@@ -44,6 +45,12 @@ SCENARIO("SharedString API")
     {
         str = "Hello";
         REQUIRE(str.begin() + std::string_view(str).size() == str.end());
+    }
+
+    SECTION("size")
+    {
+        str = "Hello";
+        REQUIRE(str.size() == 5);
     }
 }
 
@@ -197,6 +204,31 @@ TEST_CASE("Image")
         REQUIRE(size.width == 3);
         REQUIRE(size.height == 2);
         REQUIRE(!img.path().has_value());
+    }
+}
+
+TEST_CASE("Image buffer access")
+{
+    using namespace slint;
+
+    auto img = Image::load_from_path(SOURCE_DIR "/redpixel.png");
+
+    REQUIRE(!img.to_rgb8().has_value());
+
+    {
+        auto rgb = img.to_rgba8();
+        REQUIRE(rgb.has_value());
+        REQUIRE(rgb->width() == 1);
+        REQUIRE(rgb->height() == 1);
+        REQUIRE(*rgb->begin() == Rgba8Pixel { 255, 0, 0, 255 });
+    }
+
+    {
+        auto rgb = img.to_rgba8_premultiplied();
+        REQUIRE(rgb.has_value());
+        REQUIRE(rgb->width() == 1);
+        REQUIRE(rgb->height() == 1);
+        REQUIRE(*rgb->begin() == Rgba8Pixel { 255, 0, 0, 255 });
     }
 }
 

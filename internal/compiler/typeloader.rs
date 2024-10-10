@@ -847,6 +847,18 @@ impl TypeLoader {
         myself
     }
 
+    pub fn drop_document(&mut self, path: &Path) -> Result<(), std::io::Error> {
+        self.all_documents.docs.remove(path);
+        if self.all_documents.currently_loading.contains_key(path) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{path:?} is still loading"),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Imports of files that don't have the .slint extension are returned.
     pub async fn load_dependencies_recursively<'a>(
         &'a mut self,
@@ -864,14 +876,12 @@ impl TypeLoader {
         .await
     }
 
-    // This function could be async when MSRV >= 1.77, but until then, we need to return a Box
-    fn load_dependencies_recursively_impl<'a: 'b, 'b>(
+    async fn load_dependencies_recursively_impl<'a: 'b, 'b>(
         state: &'a RefCell<BorrowedTypeLoader<'a>>,
         doc: &'b syntax_nodes::Document,
         registry_to_populate: &'b Rc<RefCell<TypeRegister>>,
         import_stack: &'b HashSet<PathBuf>,
-    ) -> core::pin::Pin<Box<dyn std::future::Future<Output = (Vec<ImportedTypes>, Exports)> + 'b>>
-    {
+    ) -> (Vec<ImportedTypes>, Exports) {
         let mut foreign_imports = vec![];
         let mut dependencies_futures = vec![];
         for mut import in Self::collect_dependencies(state, doc) {
@@ -905,84 +915,70 @@ impl TypeLoader {
             }));
         }
 
-        Box::pin(async move {
-            let mut reexports = None;
-            let mut has_star_reexport = false;
-            std::future::poll_fn(|cx| {
-                dependencies_futures.retain_mut(|fut| {
-                    let core::task::Poll::Ready((import, doc_path)) = fut.as_mut().poll(cx) else {
-                        return true;
-                    };
-                    let Some(doc_path) = doc_path else { return false };
-                    let mut state = state.borrow_mut();
-                    let state = &mut *state;
-                    let doc = state.tl.all_documents.docs.get(&doc_path).unwrap();
-                    match &import.import_kind {
-                        ImportKind::ImportList(imported_types) => {
-                            let mut imported_types =
-                                ImportedName::extract_imported_names(imported_types).peekable();
-                            if imported_types.peek().is_some() {
-                                Self::register_imported_types(
-                                    doc,
-                                    &import,
-                                    imported_types,
-                                    registry_to_populate,
-                                    state.diag,
-                                );
-                            } else {
-                                state.diag.push_error("Import names are missing. Please specify which types you would like to import".into(), &import.import_uri_token.parent());
-                            }
-                        }
-                        ImportKind::ModuleReexport(export_module_syntax_node) => {
-                            let exports = reexports.get_or_insert_with(Exports::default);
-                            if let Some(star_reexport) = export_module_syntax_node
-                                .ExportModule()
-                                .and_then(|x| x.child_token(SyntaxKind::Star))
-                            {
-                                if has_star_reexport {
-                                    state.diag.push_error("re-exporting modules is only allowed once per file".into(), &star_reexport);
-                                    return false;
-                                }
-                                has_star_reexport = true;
-                                exports.add_reexports(
-                                    doc.exports.iter().map(|(exported_name, compo_or_type)| {
-                                        let exported_name = ExportedName {
-                                            name: exported_name.name.clone(),
-                                            name_ident: (**export_module_syntax_node).clone(),
-                                        };
-                                        (exported_name, compo_or_type.clone())
-                                    }),
-                                    state.diag,
-                                );
-                            } else if export_module_syntax_node.ExportSpecifier().next().is_none() {
-                                state.diag.push_error("Import names are missing. Please specify which types you would like to re-export".into(), export_module_syntax_node);
-                            } else {
-                                let e = export_module_syntax_node
-                                    .ExportSpecifier()
-                                    .filter_map(|e| {
-                                        let (imported_name, exported_name) =
-                                            ExportedName::from_export_specifier(&e);
-                                        let Some(r) = doc.exports.find(&imported_name) else {
-                                            state.diag.push_error(format!("No exported type called '{imported_name}' found in {doc_path:?}"), &e);
-                                            return None;
-                                        };
-                                        Some((exported_name, r))
-                                    })
-                                    .collect::<Vec<_>>();
-                                exports.add_reexports(e, state.diag);
-                            }
+        let mut reexports = None;
+        let mut has_star_reexport = false;
+        std::future::poll_fn(|cx| {
+            dependencies_futures.retain_mut(|fut| {
+                let core::task::Poll::Ready((import, doc_path)) = fut.as_mut().poll(cx) else { return true; };
+                let Some(doc_path) = doc_path else { return false };
+                let mut state = state.borrow_mut();
+                let state = &mut *state;
+                let doc = state.tl.all_documents.docs.get(&doc_path).unwrap();
+                match &import.import_kind {
+                    ImportKind::ImportList(imported_types) => {
+                        let mut imported_types = ImportedName::extract_imported_names(imported_types).peekable();
+                        if imported_types.peek().is_some() {
+                            Self::register_imported_types(doc, &import, imported_types, registry_to_populate, state.diag);
+                        } else {
+                            state.diag.push_error("Import names are missing. Please specify which types you would like to import".into(), &import.import_uri_token.parent());
                         }
                     }
-                    false
-                });
-                if dependencies_futures.is_empty() {
-                    core::task::Poll::Ready(())
-                } else {
-                    core::task::Poll::Pending
+                    ImportKind::ModuleReexport(export_module_syntax_node) => {
+                        let exports = reexports.get_or_insert_with(Exports::default);
+                        if let Some(star_reexport) = export_module_syntax_node.ExportModule().and_then(|x| x.child_token(SyntaxKind::Star))
+                        {
+                            if has_star_reexport {
+                                state.diag.push_error("re-exporting modules is only allowed once per file".into(), &star_reexport);
+                                return false;
+                            }
+                            has_star_reexport = true;
+                            exports.add_reexports(
+                                doc.exports.iter().map(|(exported_name, compo_or_type)| {
+                                    let exported_name = ExportedName {
+                                        name: exported_name.name.clone(),
+                                        name_ident: (**export_module_syntax_node).clone(),
+                                    };
+                                    (exported_name, compo_or_type.clone())
+                                }),
+                                state.diag,
+                            );
+                        } else if export_module_syntax_node.ExportSpecifier().next().is_none() {
+                            state.diag.push_error("Import names are missing. Please specify which types you would like to re-export".into(), export_module_syntax_node);
+                        } else {
+                            let e = export_module_syntax_node
+                                .ExportSpecifier()
+                                .filter_map(|e| {
+                                    let (imported_name, exported_name) = ExportedName::from_export_specifier(&e);
+                                    let Some(r) = doc.exports.find(&imported_name) else {
+                                        state.diag.push_error(format!("No exported type called '{imported_name}' found in {doc_path:?}"), &e);
+                                        return None;
+                                    };
+                                    Some((exported_name, r))
+                                })
+                                .collect::<Vec<_>>();
+                            exports.add_reexports(e, state.diag);
+                        }
+                    }
                 }
-            }).await;
-            (foreign_imports, reexports.unwrap_or_default())
-        })
+                false
+            });
+            if dependencies_futures.is_empty() {
+                core::task::Poll::Ready(())
+            } else {
+                core::task::Poll::Pending
+            }
+        }).await;
+        (foreign_imports, reexports.unwrap_or_default())
     }
 
     pub async fn import_component(
@@ -1029,6 +1025,17 @@ impl TypeLoader {
                         .filter(|p| p.exists())
                         .map(|p| (p, None))
                 })
+        }
+    }
+
+    /// Read a file, taking the `CompilerConfiguration`s `open_import_fallback`
+    /// into account when necessary.
+    async fn read_file(&self, path: &Path) -> Result<String, std::io::Error> {
+        if let Some(fallback) = self.compiler_config.open_import_fallback.clone() {
+            let result = fallback(path.to_string_lossy().into()).await;
+            result.unwrap_or_else(|| std::fs::read_to_string(path))
+        } else {
+            std::fs::read_to_string(path)
         }
     }
 
@@ -1113,14 +1120,8 @@ impl TypeLoader {
                 core::str::from_utf8(builtin)
                     .expect("internal error: embedded file is not UTF-8 source code"),
             ))
-        } else if let Some(fallback) = {
-            let fallback = state.borrow().tl.compiler_config.open_import_fallback.clone();
-            fallback
-        } {
-            let result = fallback(path_canon.to_string_lossy().into()).await;
-            result.unwrap_or_else(|| std::fs::read_to_string(&path_canon))
         } else {
-            std::fs::read_to_string(&path_canon)
+            state.borrow().tl.read_file(&path_canon).await
         };
 
         let ok = match source_code_result {

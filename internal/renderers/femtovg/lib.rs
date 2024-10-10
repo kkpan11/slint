@@ -332,7 +332,7 @@ impl FemtoVGRenderer {
         let canvas_id = self.canvas_id.borrow();
 
         let api =
-            GraphicsAPI::WebGL { canvas_element_id: canvas_id.as_str(), context_type: "webgl" };
+            GraphicsAPI::WebGL { canvas_element_id: canvas_id.as_str(), context_type: "webgl2" };
         callback(api);
         Ok(())
     }
@@ -355,6 +355,14 @@ impl RendererSealed for FemtoVGRenderer {
         _text_wrap: TextWrap, //TODO: Add support for char-wrap
     ) -> LogicalSize {
         crate::fonts::text_size(&font_request, scale_factor, text, max_width)
+    }
+
+    fn font_metrics(
+        &self,
+        font_request: i_slint_core::graphics::FontRequest,
+        _scale_factor: ScaleFactor,
+    ) -> i_slint_core::items::FontMetrics {
+        crate::fonts::font_metrics(font_request)
     }
 
     fn text_input_byte_offset_for_position(
@@ -644,6 +652,11 @@ impl FemtoVGRendererExt for FemtoVGRenderer {
                 panic!("Cannot proceed without WebGL - aborting")
             }
         };
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            *self.canvas_id.borrow_mut() = html_canvas.id();
+        }
 
         let femtovg_canvas = femtovg::Canvas::new_with_text_context(
             gl_renderer,

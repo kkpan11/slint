@@ -88,6 +88,40 @@ pub fn request_state(ctx: &std::rc::Rc<Context>) {
     }
 }
 
+async fn register_file_watcher(ctx: &Context) -> common::Result<()> {
+    use lsp_types::notification::Notification;
+
+    if ctx
+        .init_param
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|ws| ws.did_change_watched_files)
+        .and_then(|wf| wf.dynamic_registration)
+        .unwrap_or(false)
+    {
+        let fs_watcher = lsp_types::DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![lsp_types::FileSystemWatcher {
+                glob_pattern: lsp_types::GlobPattern::String("**/*.slint".to_string()),
+                kind: Some(lsp_types::WatchKind::Change | lsp_types::WatchKind::Delete),
+            }],
+        };
+        ctx.server_notifier
+            .send_request::<lsp_types::request::RegisterCapability>(
+                lsp_types::RegistrationParams {
+                    registrations: vec![lsp_types::Registration {
+                        id: "slint.file_watcher.registration".to_string(),
+                        method: lsp_types::notification::DidChangeWatchedFiles::METHOD.to_string(),
+                        register_options: Some(serde_json::to_value(fs_watcher).unwrap()),
+                    }],
+                },
+            )?
+            .await?;
+    }
+
+    Ok(())
+}
+
 pub struct Context {
     pub document_cache: RefCell<DocumentCache>,
     pub preview_config: RefCell<common::PreviewConfig>,
@@ -96,6 +130,7 @@ pub struct Context {
     /// The last component for which the user clicked "show preview"
     #[cfg(any(feature = "preview-external", feature = "preview-engine"))]
     pub to_show: RefCell<Option<common::PreviewComponent>>,
+    pub open_urls: RefCell<std::collections::HashSet<lsp_types::Url>>,
 }
 
 /// An error from a LSP request
@@ -341,16 +376,42 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
         {
             let p = tk.parent();
             let gp = p.parent();
+
+            if p.kind() == SyntaxKind::DeclaredIdentifier
+                && gp.as_ref().map_or(false, |n| n.kind() == SyntaxKind::Component)
+            {
+                let element = gp.as_ref().unwrap().child_node(SyntaxKind::Element).unwrap();
+
+                ctx.server_notifier.send_message_to_preview(
+                    common::LspToPreviewMessage::HighlightFromEditor {
+                        url: Some(uri),
+                        offset: element.text_range().start().into(),
+                    },
+                );
+
+                let range = util::node_to_lsp_range(&p);
+                return Ok(Some(vec![lsp_types::DocumentHighlight { range, kind: None }]));
+            }
+
             if p.kind() == SyntaxKind::QualifiedName
                 && gp.as_ref().map_or(false, |n| n.kind() == SyntaxKind::Element)
             {
                 let range = util::node_to_lsp_range(&p);
-                ctx.server_notifier.send_message_to_preview(
-                    common::LspToPreviewMessage::HighlightFromEditor {
-                        url: Some(uri),
-                        offset: gp.unwrap().text_range().start().into(),
-                    },
-                );
+
+                if gp
+                    .as_ref()
+                    .unwrap()
+                    .parent()
+                    .as_ref()
+                    .map_or(false, |n| n.kind() != SyntaxKind::Component)
+                {
+                    ctx.server_notifier.send_message_to_preview(
+                        common::LspToPreviewMessage::HighlightFromEditor {
+                            url: Some(uri),
+                            offset: gp.unwrap().text_range().start().into(),
+                        },
+                    );
+                }
                 return Ok(Some(vec![lsp_types::DocumentHighlight { range, kind: None }]));
             }
 
@@ -539,6 +600,23 @@ pub(crate) async fn reload_document_impl(
     lsp_diags
 }
 
+pub async fn open_document(
+    ctx: &Rc<Context>,
+    content: String,
+    url: lsp_types::Url,
+    version: Option<i32>,
+    document_cache: &mut DocumentCache,
+) -> common::Result<()> {
+    ctx.open_urls.borrow_mut().insert(url.clone());
+
+    reload_document(ctx, content, url, version, document_cache).await
+}
+
+pub async fn close_document(ctx: &Rc<Context>, url: lsp_types::Url) -> common::Result<()> {
+    ctx.open_urls.borrow_mut().remove(&url);
+    invalidate_document(ctx, url).await
+}
+
 pub async fn reload_document(
     ctx: &Rc<Context>,
     content: String,
@@ -557,6 +635,22 @@ pub async fn reload_document(
         )?;
     }
 
+    Ok(())
+}
+
+pub async fn invalidate_document(ctx: &Rc<Context>, url: lsp_types::Url) -> common::Result<()> {
+    // The preview cares about resources and slint files, so forward everything
+    ctx.server_notifier.send_message_to_preview(common::LspToPreviewMessage::InvalidateContents {
+        url: url.clone(),
+    });
+
+    ctx.document_cache.borrow_mut().drop_document(&url)
+}
+
+pub async fn trigger_file_watcher(ctx: &Rc<Context>, url: lsp_types::Url) -> common::Result<()> {
+    if !ctx.open_urls.borrow().contains(&url) {
+        invalidate_document(ctx, url).await?;
+    }
     Ok(())
 }
 
@@ -1061,6 +1155,11 @@ fn find_element_id_for_highlight(
         }
     }
     None
+}
+
+pub async fn startup_lsp(ctx: &Context) -> common::Result<()> {
+    register_file_watcher(ctx).await?;
+    load_configuration(ctx).await
 }
 
 pub async fn load_configuration(ctx: &Context) -> common::Result<()> {

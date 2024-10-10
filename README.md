@@ -6,9 +6,10 @@
 [![REUSE status](https://api.reuse.software/badge/github.com/slint-ui/slint)](https://api.reuse.software/info/github.com/slint-ui/slint)
 [![Discussions](https://img.shields.io/github/discussions/slint-ui/slint)](https://github.com/slint-ui/slint/discussions)
 
-Slint is a declarative GUI toolkit to build native user interfaces for desktop
-and embedded applications written in Rust, C++, or JavaScript. The name *Slint*
-is derived from our design goals:
+Slint is a declarative GUI toolkit to build native user interfaces for embedded,
+desktop, and mobile applications written in Rust, C++, JavaScript, or Python. 
+
+The name *Slint* is derived from our design goals:
 
 - **Scalable**: Slint should support responsive UI design, allow cross-platform
     usage across operating systems and processor architectures and support
@@ -119,9 +120,9 @@ The `docs` folder contains a lot more information, including
 
 Refer to the README of each language directory in the `api` folder:
 
-- [C++](api/cpp) ([Documentation][#15] | [Tutorial][#16] | [Getting Started Template][#17])
-- [Rust](api/rs/slint) [![Crates.io][#18]][#19] ([Documentation][#20] | [Tutorial][#21] | [Tutorial Video][#22] | [Getting Started Template][#23])
-- [JavaScript/NodeJS (Beta)](api/node) [![npm][#24]][#25] ([Documentation][#26] | [Tutorial][#27] | [Getting Started Template][#28])
+- [C++](api/cpp) ([Documentation][#15] | [Getting Started Template][#17])
+- [Rust](api/rs/slint) [![Crates.io][#18]][#19] ([Documentation][#20] | [Tutorial Video][#22] | [Getting Started Template][#23])
+- [JavaScript/NodeJS (Beta)](api/node) [![npm][#24]][#25] ([Documentation][#26] | [Getting Started Template][#28])
 
 ## Architecture
 
@@ -187,11 +188,11 @@ configure your favorite editor to work well with Slint.
 
 You can use Slint under ***any*** of the following licenses, at your choice:
 
-1. [Royalty-free license](LICENSES/LicenseRef-Slint-Royalty-free-2.0.md),
-2. [GNU GPLv3](LICENSES/GPL-3.0-only.txt),
-3. [Paid license](LICENSES/LicenseRef-Slint-Software-3.0.md).
+1. Build proprietary desktop, mobile, or web applications for free with the [Community License](LICENSES/LicenseRef-Slint-Royalty-free-2.0.md),
+2. Build open source embedded, desktop, mobile, or web applications for free with the [GNU GPLv3](LICENSES/GPL-3.0-only.txt),
+3. Build proprietary embedded, desktop, mobile, or web applications with the [Paid license](LICENSES/LicenseRef-Slint-Software-3.0.md).
 
-See also the [Licensing FAQ](FAQ.md#licensing)
+See the [Slint licensing options on the website](https://slint.dev/pricing.html) and the [Licensing FAQ](FAQ.md#licensing).
 
 ## Contributions
 
@@ -209,7 +210,7 @@ Please see our separate [FAQ](FAQ.md).
 
 We are passionate about software - API design, cross-platform software
 development and user interface components. Our aim is to make developing user
-interfaces fun for everyone: from JavaScript, C++, or Rust developers all the
+interfaces fun for everyone: from Python, JavaScript, C++, or Rust developers all the
 way to UI/UX designers. We believe that software grows organically and keeping
 it open source is the best way to sustain that growth. Our team members are
 located remotely in Germany.
@@ -246,18 +247,15 @@ You can of course also contact us privately via email to [info@slint.dev](mailto
 [#13]: https://slint.dev/resources/gallery_screenshot.png "Gallery Demo"
 [#14]: https://slint.dev/demos/gallery/
 [#15]: https://slint.dev/latest/docs/cpp
-[#16]: https://slint.dev/latest/docs/quickstart/cpp
 [#17]: https://github.com/slint-ui/slint-cpp-template
 [#18]: https://img.shields.io/crates/v/slint
 [#19]: https://crates.io/crates/slint
 [#20]: https://slint.dev/latest/docs/rust/slint/
-[#21]: https://slint.dev/latest/docs/quickstart/rust
 [#22]: https://youtu.be/WBcv4V-whHk
 [#23]: https://github.com/slint-ui/slint-rust-template
 [#24]: https://img.shields.io/npm/v/slint-ui
 [#25]: https://www.npmjs.com/package/slint-ui
 [#26]: https://slint.dev/latest/docs/node
-[#27]: https://slint.dev/latest/docs/quickstart/node
 [#28]: https://github.com/slint-ui/slint-nodejs-template
 [#29]: ./examples/weather-demo/docs/img/desktop-preview.png "Weather Demo"
 [#30]: https://slint.dev/demos/weather-demo/

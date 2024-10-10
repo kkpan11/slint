@@ -409,6 +409,28 @@ macro_rules! for_each_enums {
                 /// The style chooses dark colors for the background and light for the foreground.
                 Light,
             }
+
+            /// This enum describes the direction of an animation.
+            enum AnimationDirection {
+                /// The ["normal" direction as defined in CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/animation-direction#normal).
+                Normal,
+                /// The ["reverse" direction as defined in CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/animation-direction#reverse).
+                Reverse,
+                /// The ["alternate" direction as defined in CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/animation-direction#alternate).
+                Alternate,
+                /// The ["alternate reverse" direction as defined in CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/animation-direction#alternate-reverse).
+                AlternateReverse,
+            }
+
+            /// This enum describes the scrollbar visibility
+            enum ScrollBarPolicy {
+                /// Scrollbar will be visible only when needed
+                AsNeeded,
+                /// Scrollbar never shown
+                AlwaysOff,
+                /// Scrollbar always visible
+                AlwaysOn,
+            }
         ];
     };
 }

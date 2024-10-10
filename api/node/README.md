@@ -7,7 +7,7 @@
 [Slint](https://slint.dev/) is a UI toolkit that supports different programming languages.
 Slint-node is the integration with Node.js.
 
-To get started you use the [walk-through tutorial](https://slint.dev/docs/quickstart/node).
+To get started you use the [walk-through tutorial](https://slint.dev/docs/slint/src/quickstart/).
 We also have a [Getting Started Template](https://github.com/slint-ui/slint-nodejs-template) repository with
 the code of a minimal application using Slint that can be used as a starting point to your program.
 
@@ -32,8 +32,8 @@ npm install slint-ui
 You need to install the following components:
 
   * **[Node.js](https://nodejs.org/download/release/)** (v16. or newer)
-  * **[npm](https://www.npmjs.com/)**
-  * **[Rust compiler](https://www.rust-lang.org/tools/install)** (1.73 or newer)
+  * **[pnpm](https://www.pnpm.io/)**
+  * **[Rust compiler](https://www.rust-lang.org/tools/install)** (1.77 or newer)
 
 You will also need a few more dependencies, see <https://github.com/slint-ui/slint/blob/master/docs/building.md#prerequisites>
 
@@ -57,7 +57,7 @@ Combining these two steps leads us to the obligatory "Hello World" example:
 
 ```js
 import * as slint from "slint-ui";
-let ui = slint.loadFile(".ui/main.slint");
+let ui = slint.loadFile(new URL(".ui/main.slint", import.meta.url));
 let main = new ui.Main();
 main.run();
 ```
@@ -94,7 +94,7 @@ an object which allow to initialize the value of public properties or callbacks.
 import * as slint from "slint-ui";
 // In this example, the main.slint file exports a module which
 // has a counter property and a clicked callback
-let ui = slint.loadFile("ui/main.slint");
+let ui = slint.loadFile(new URL("ui/main.slint", import.meta.url));
 let component = new ui.MainWindow({
     counter: 42,
     clicked: function() { console.log("hello"); }
@@ -135,7 +135,7 @@ The callbacks in Slint are exposed as properties in JavaScript and that can be c
 ```js
 import * as slint from "slint-ui";
 
-let ui = slint.loadFile("ui/my-component.slint");
+let ui = slint.loadFile(new URL("ui/my-component.slint", import.meta.url));
 let component = new ui.MyComponent();
 
 // connect to a callback
@@ -168,7 +168,7 @@ If the function is marked `public`, it can also be called from JavaScript.
 ```js
 import * as slint from "slint-ui";
 
-let ui = slint.loadFile("ui/my-component.slint");
+let ui = slint.loadFile(new URL("ui/my-component.slint", import.meta.url));
 let component = new ui.MyComponent();
 
 // call a public function
@@ -193,6 +193,7 @@ The types used for properties in .slint design markup each translate to specific
 | `angle` | `Number` | The angle in degrees |
 | structure | `Object` | Structures are mapped to JavaScript objects where each structure field is a property. |
 | array | `Array` or any implementation of Model | |
+| enumeration | `String` | The value of an enum |
 
 ### Arrays and Models
 
@@ -271,4 +272,73 @@ component.model = model;
 model.push(4); // this works
 // does NOT work, getting the model does not return the right object
 // component.model.push(5);
+```
+
+### structs
+
+An exported struct can be created either by defing of an object literal or by using the new keyword.
+
+**`my-component.slint`**
+
+```slint
+export struct Person {
+    name: string,
+    age: int
+}
+
+export component MyComponent inherits Window {
+    in-out property <Person> person;
+}
+```
+
+**`main.js`**
+
+```js
+
+import * as slint from "slint-ui";
+
+let ui = slint.loadFile(new URL("my-component.slint", import.meta.url));
+let component = new ui.MyComponent();
+
+// object literal
+component.person = { name: "Peter", age: 22 };
+
+// new keyword (sets property values to default e.g. '' for string)
+component.person = new ui.Person();
+
+// new keyword with parameters
+component.person = new ui.Person({ name: "Tim", age: 30 });
+```
+
+### enums
+
+A value of an exported enum can be set as string or by usign the value from the exported enum.
+
+**`my-component.slint`**
+
+```slint
+export enum Position {
+    top,
+    bottom
+}
+
+export component MyComponent inherits Window {
+    in-out property <Position> position;
+}
+```
+
+**`main.js`**
+
+```js
+
+import * as slint from "slint-ui";
+
+let ui = slint.loadFile(new URL("my-component.slint", import.meta.url));
+let component = new ui.MyComponent();
+
+// set enum value as string
+component.position = "top";
+
+// use the value of the enum
+component.position = ui.Position.bottom;
 ```

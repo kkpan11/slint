@@ -5,13 +5,14 @@ import test from "ava";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import Jimp = require("jimp");
+import { captureStderr } from "capture-console";
 
 import {
     private_api,
     type ImageData,
     ArrayModel,
     type Model,
-} from "../index.js";
+} from "../dist/index.js";
 
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
@@ -497,6 +498,54 @@ test("get/set brush properties", (t) => {
     }
 });
 
+test("get/set enum properties", (t) => {
+    const compiler = new private_api.ComponentCompiler();
+    const definition = compiler.buildFromSource(
+        `export enum Direction { up, down }
+         export component App { in-out property <Direction> direction: up; }`,
+        "",
+    );
+    t.not(definition.App, null);
+
+    const instance = definition.App!.create();
+    t.not(instance, null);
+
+    t.is(instance!.getProperty("direction"), "up");
+
+    instance!.setProperty("direction", "down");
+    t.is(instance!.getProperty("direction"), "down");
+
+    t.throws(
+        () => {
+            instance!.setProperty("direction", 42);
+        },
+        {
+            code: "InvalidArg",
+            message: "expect String, got: Number",
+        },
+    );
+
+    t.throws(
+        () => {
+            instance!.setProperty("direction", { blah: "foo" });
+        },
+        {
+            code: "InvalidArg",
+            message: "expect String, got: Object",
+        },
+    );
+
+    t.throws(
+        () => {
+            instance!.setProperty("direction", "left");
+        },
+        {
+            code: "GenericFailure",
+            message: "left is not a value of enum Direction",
+        },
+    );
+});
+
 test("ArrayModel", (t) => {
     const compiler = new private_api.ComponentCompiler();
     const definition = compiler.buildFromSource(
@@ -598,11 +647,12 @@ test("MapModel", (t) => {
 
     instance!.setProperty("model", mapModel);
 
-    nameModel.setRowData(1, { first: "Simon", last: "Hausmann" });
+    nameModel.setRowData(0, { first: "Simon", last: "Hausmann" });
+    nameModel.setRowData(1, { first: "Olivier", last: "Goffart" });
 
     const checkModel = instance!.getProperty("model") as Model<string>;
-    t.is(checkModel.rowData(0), "Emil, Hans");
-    t.is(checkModel.rowData(1), "Hausmann, Simon");
+    t.is(checkModel.rowData(0), "Hausmann, Simon");
+    t.is(checkModel.rowData(1), "Goffart, Olivier");
     t.is(checkModel.rowData(2), "Tisch, Roman");
 });
 
@@ -825,4 +875,134 @@ test("invoke callback", (t) => {
 
     t.deepEqual(instance!.invoke("get-string", []), "string");
     t.deepEqual(instance!.invoke("person", []), { name: "florian" });
+});
+
+test("wrong callback return type ", (t) => {
+    const compiler = new private_api.ComponentCompiler();
+    const definition = compiler.buildFromSource(
+        `
+  export struct Person {
+    name: string,
+    age: int,
+    
+  }
+  export component App {
+    callback get-string() -> string;
+    callback get-int() -> int;
+    callback get-bool() -> bool;
+    callback get-person() -> Person;
+  }
+  `,
+        "",
+    );
+    t.not(definition.App, null);
+
+    const instance = definition.App!.create();
+    t.not(instance, null);
+    let speakTest: string;
+
+    instance!.setCallback("get-string", () => {
+        return 20;
+    });
+
+    const string = instance!.invoke("get-string", []);
+    t.deepEqual(string, "");
+
+    instance!.setCallback("get-int", () => {
+        return "string";
+    });
+
+    const int = instance!.invoke("get-int", []);
+    t.deepEqual(int, 0);
+
+    instance!.setCallback("get-bool", () => {
+        return "string";
+    });
+
+    const bool = instance!.invoke("get-bool", []);
+    t.deepEqual(bool, false);
+
+    instance!.setCallback("get-person", () => {
+        return "string";
+    });
+
+    const person = instance!.invoke("get-person", []);
+    t.deepEqual(person, { name: "", age: 0 });
+});
+
+test("wrong global callback return type ", (t) => {
+    const compiler = new private_api.ComponentCompiler();
+    const definition = compiler.buildFromSource(
+        `
+        export struct Person {
+            name: string,
+            age: int,
+        }
+        export global Global {   
+            callback get-string() -> string;
+            callback get-int() -> int;
+            callback get-bool() -> bool;
+            callback get-person() -> Person;
+        }
+        export component App {
+        }
+  `,
+        "",
+    );
+    t.not(definition.App, null);
+
+    const instance = definition.App!.create();
+    t.not(instance, null);
+    let speakTest: string;
+
+    instance!.setGlobalCallback("Global", "get-string", () => {
+        return 20;
+    });
+
+    const string = instance!.invokeGlobal("Global", "get-string", []);
+    t.deepEqual(string, "");
+
+    instance!.setGlobalCallback("Global", "get-bool", () => {
+        return "string";
+    });
+
+    const bool = instance!.invokeGlobal("Global", "get-bool", []);
+    t.deepEqual(bool, false);
+
+    instance!.setGlobalCallback("Global", "get-person", () => {
+        return "string";
+    });
+
+    const person = instance!.invokeGlobal("Global", "get-person", []);
+    t.deepEqual(person, { name: "", age: 0 });
+});
+
+test("throw exception in callback", (t) => {
+    const compiler = new private_api.ComponentCompiler();
+    const definition = compiler.buildFromSource(
+        `
+  export component App {
+    callback throw-something();
+  }
+  `,
+        "",
+    );
+    t.not(definition.App, null);
+
+    const instance = definition.App!.create();
+    t.not(instance, null);
+    let speakTest: string;
+
+    instance!.setCallback("throw-something", () => {
+        throw new Error("I'm an error");
+    });
+
+    const output = captureStderr(() => {
+        instance!.invoke("throw-something", []);
+    });
+    t.assert(
+        output.includes("Node.js: Invoking callback 'throw-something' failed:"),
+        `Output was ${output}`,
+    );
+    t.assert(output.includes("I'm an error"), `Output was ${output}`);
 });

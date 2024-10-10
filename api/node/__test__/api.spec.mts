@@ -5,7 +5,7 @@ import test from "ava";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadFile, loadSource, CompileError } from "../index.js";
+import { loadFile, loadSource, CompileError } from "../dist/index.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,7 +81,6 @@ test("loadFile constructor parameters", (t) => {
 });
 
 test("loadFile component instances and modules are sealed", (t) => {
-    "use strict";
     const demo = loadFile(path.join(dirname, "resources/test.slint")) as any;
 
     t.throws(
@@ -182,7 +181,6 @@ test("loadSource constructor parameters", (t) => {
 });
 
 test("loadSource component instances and modules are sealed", (t) => {
-    "use strict";
     const source = `export component Test {
         out property <string> check: "Test";
     }`;
@@ -205,4 +203,68 @@ test("loadSource component instances and modules are sealed", (t) => {
         },
         { instanceOf: TypeError },
     );
+});
+
+test("loadFile struct", (t) => {
+    const demo = loadFile(
+        path.join(dirname, "resources/test-struct.slint"),
+    ) as any;
+
+    const test = new demo.Test({
+        check: new demo.TestStruct(),
+    });
+
+    t.deepEqual(test.check, { text: "", flag: false, value: 0 });
+});
+
+test("loadFile struct constructor parameters", (t) => {
+    const demo = loadFile(
+        path.join(dirname, "resources/test-struct.slint"),
+    ) as any;
+
+    const test = new demo.Test({
+        check: new demo.TestStruct({ text: "text", flag: true, value: 12 }),
+    });
+
+    t.deepEqual(test.check, { text: "text", flag: true, value: 12 });
+
+    test.check = new demo.TestStruct({
+        text: "hello world",
+        flag: false,
+        value: 8,
+    });
+    t.deepEqual(test.check, { text: "hello world", flag: false, value: 8 });
+});
+
+test("loadFile struct constructor more parameters", (t) => {
+    const demo = loadFile(
+        path.join(dirname, "resources/test-struct.slint"),
+    ) as any;
+
+    const test = new demo.Test({
+        check: new demo.TestStruct({
+            text: "text",
+            flag: true,
+            value: 12,
+            noProp: "hello",
+        }),
+    });
+
+    t.deepEqual(test.check, { text: "text", flag: true, value: 12 });
+});
+
+test("loadFile enum", (t) => {
+    const demo = loadFile(
+        path.join(dirname, "resources/test-enum.slint"),
+    ) as any;
+
+    const test = new demo.Test({
+        check: demo.TestEnum.b,
+    });
+
+    t.deepEqual(test.check, "b");
+
+    test.check = demo.TestEnum.c;
+
+    t.deepEqual(test.check, "c");
 });

@@ -13,7 +13,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
   cancel-in-progress: true
-      
+
 env:
     MACOSX_DEPLOYMENT_TARGET: "11.0"
 
@@ -30,7 +30,7 @@ jobs:
         strategy:
             matrix:
                 os: [ubuntu-22.04, macos-12, windows-2022]
-                rust_version: [stable, "1.73"]
+                rust_version: [stable, "1.77"]
                 include:
                     - os: windows-2022
                       extra_args: "--exclude ffmpeg --exclude gstreamer-player"
@@ -43,8 +43,8 @@ jobs:
                       rust_version: "nightly"
                 exclude:
                     - os: macos-12
-                      rust_version: "1.73"
-                    # We already test 1.73 and nightly. Stable is in the middle and already covered by other jobs
+                      rust_version: "1.77"
+                    # We already test 1.77 and nightly. Stable is in the middle and already covered by other jobs
                     - os: ubuntu-22.04
                       rust_version: "stable"
 
@@ -78,15 +78,13 @@ jobs:
               with:
                   toolchain: ${{ matrix.rust_version }}
                   key: x-v2
-            - name: Pin dependencies to make it build with our MSRV
-              if: matrix.rust_version == '1.73'
-              shell: bash
-              run: |
-                  if [ ! -f ./Cargo.lock ]; then
-                    cargo update -p clap --precise 4.4.18
-                    cargo update -p rowan --precise 0.15.15
-                    cargo update -p plotters --precise 0.3.6
-                  fi
+            # - name: Pin dependencies to make it build with our MSRV
+            #   if: matrix.rust_version == '1.77'
+            #   shell: bash
+            #   run: |
+            #       if [ ! -f ./Cargo.lock ]; then
+            #         cargo update -p xxx --precise x.y.z
+            #       fi
             - name: Run tests (not qt)
               run: DYLD_FRAMEWORK_PATH=$Qt5_DIR/lib cargo test --verbose --all-features --workspace ${{ matrix.extra_args }} --exclude slint-node --exclude pyslint --exclude test-driver-node --exclude slint-node --exclude test-driver-nodejs --exclude test-driver-cpp --exclude mcu-board-support --exclude printerdemo_mcu --exclude uefi-demo --exclude slint-cpp --exclude slint-python -- --skip=_qt::t
               env:
@@ -132,27 +130,32 @@ jobs:
               run: choco upgrade llvm
             - name: Setup headless display
               uses: pyvista/setup-headless-display-action@v1
-            - uses: ./.github/actions/install-nodejs
+            - uses: actions/setup-node@v4
+              with:
+                node-version: 20
               id: node-install
+            - uses: pnpm/action-setup@v4.0.0
+              with:
+                version: 9.11.0
             - uses: ./.github/actions/setup-rust
               with:
                   key: x-napi-v2-${{ steps.node-install.outputs.node-version }} # the cache key consists of a manually bumpable version and the node version, as the cached rustc artifacts contain linking information where to find node.lib, which is in a versioned directory.
-            - name: Run npm install
-              working-directory: ./api/node
-              run: npm install --ignore-scripts
+            - name: Run pnpm install
+              working-directory: api/node
+              run: pnpm install --frozen-lockfile --ignore-scripts
+            - name: Build node plugin in debug
+              run: pnpm build:testing
+              working-directory: api/node
             - name: Lint node api
-              working-directory: ./api/node
-              run: npm run lint
+              working-directory: api/node
+              run: pnpm lint
             - name: Check code formatting
               if: ${{ runner.os != 'Windows' }}
-              working-directory: ./api/node
-              run: npm run format
-            - name: Build node plugin in debug
-              run: npm run build:testing
-              working-directory: ./api/node
+              working-directory: api/node
+              run: pnpm format
             - name: Run node tests
-              working-directory: ./api/node
-              run: npm test
+              working-directory: api/node
+              run: pnpm test
             - name: Run test-driver-nodejs
               # Release is only applied to the harness that drives the node.js invocations, but needed
               # to avoid crashing on Windows with what looks like an out of stack exception.
@@ -192,7 +195,7 @@ jobs:
                   python-version: "3.10"
             - uses: fjwillemsen/setup-nox2@v3.0.0
             - name: Run python tests
-              working-directory: ./api/python
+              working-directory: api/python
               run: nox
 
     cpp_test_driver:
@@ -243,7 +246,7 @@ jobs:
             matrix:
                 include:
                     - os: macos-12
-                      rust_version: "1.73"
+                      rust_version: "1.77"
                     - os: windows-2022
                       rust_version: "nightly"
                     - os: ubuntu-22.04
@@ -325,43 +328,46 @@ jobs:
                   cmakeAppendedArgs: "-DCMAKE_BUILD_TYPE=Release -DSLINT_FEATURE_INTERPRETER=1 -DSLINT_FEATURE_BACKEND_QT=1"
                   buildDirectory: ${{ runner.workspace }}/examples/build
                   buildWithCMakeArgs: "--config Release"
-    
+
     vsce_build_test:
         runs-on: ubuntu-22.04
 
         steps:
             - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4.0.0
+              with:
+                version: 9.11.0
             - uses: Swatinem/rust-cache@v2
               with:
                 key: "vsce_1" # increment this to bust the cache if needed
-            - uses: ./.github/actions/install-linux-dependencies            
+            - uses: ./.github/actions/install-linux-dependencies
             - uses: actions/setup-node@v4
               with:
-                  node-version: 18
+                  node-version: 20
             - name: Install wasm-pack
               run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
             - name: Fake slint-lsp build
               run: |
                   mkdir -p target/debug
                   echo 1 > target/debug/slint-lsp
-            - name: Run npm install
-              working-directory: ./editors/vscode
-              run: npm clean-install
+            - name: Run pnpm install
+              working-directory: editors/vscode
+              run: pnpm install --frozen-lockfile --ignore-scripts
             - name: Lint vscode project
-              working-directory: ./editors/vscode
-              run: npm run lint
+              working-directory: editors/vscode
+              run: pnpm lint
             - name: Check code formatting
-              working-directory: ./editors/vscode
-              run: npm run format
+              working-directory: editors/vscode
+              run: pnpm format
             - name: vscode prebuild
-              working-directory: ./editors/vscode
-              run: npm run vscode:prepublish
+              working-directory: editors/vscode
+              run: pnpm vscode:prepublish
             - name: Build VS Code extension
-              working-directory: ./editors/vscode
-              run: npm run local-package
+              working-directory: editors/vscode
+              run: pnpm local-package
             - name: Typescript syntax check # has to run after the build as it depends on the wasm
-              working-directory: ./editors/vscode
-              run: npm run syntax_check
+              working-directory: editors/vscode
+              run: pnpm type-check
 
     # test to compile the mcu backend for the arm target (no_std)
     mcu:

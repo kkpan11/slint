@@ -7,11 +7,15 @@ Files: */slint-icon-*.svg */slint-icon-*.png */slint-icon-*.pdf */slint-logo-*.s
 Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: CC-BY-ND-4.0
 
-Files: .gitattributes .gitignore */.gitignore .dockerignore .vscode/* cspell.json rustfmt.toml .mailmap */.eslintrc.yml Cargo.lock */.npmignore biome.json package-lock.json
+Files: .gitattributes .gitignore */.gitignore .dockerignore .vscode/* cspell.json rustfmt.toml .mailmap */.eslintrc.yml Cargo.lock */.npmignore biome.json package-lock.json docs/search/scraper-config.json pnpm-lock.yaml package.json
 Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 Files: api/cpp/docs/*/*.html api/cpp/docs/*/*.css docs/*/*.css docs/*/*.html docs/*/book.toml docs/*/package.json
+Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
+License: MIT
+
+Files: api/cpp/tests/redpixel.png
 Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: MIT
 
@@ -55,7 +59,7 @@ Files: tools/slintpad/*.html tools/slintpad/styles/*.css tools/slintpad/*.json
 Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-Files: editors/vscode/*.json editors/vscode/css/*.css editors/tree-sitter-slint/corpus/*.txt
+Files: editors/vscode/*.json editors/vscode/css/*.css editors/tree-sitter-slint/corpus/*.txt editors/vscode/tests/grammar/*.slint
 Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
@@ -124,6 +128,18 @@ Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: MIT
 
 Files: examples/dial/images/*.png
+Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
+License: MIT
+
+Files: examples/sprite-sheet/images/*.png
+Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
+License: MIT
+
+Files: examples/orbit-animation/images/*.png examples/orbit-animation/images/*.svg
+Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
+License: MIT
+
+Files: examples/fancy-switches/images/*.png examples/fancy-switches/images/*.svg
 Copyright: Copyright © SixtyFPS GmbH <info@slint.dev>
 License: MIT
 

@@ -4,16 +4,6 @@
 
 cd `dirname $0`/../editors/vscode
 
-modified_files="README.md package.json"
-
-git diff --quiet $modified_files
-if [ $? -ne 0 ]; then
-    echo "Aborting, there are local changes to $modified_files . Please commit or undo."
-    exit 1
-fi
-
-git checkout $modified_files
-
 # The version number is a shortend time stamp of the last commit
 nightly_version=`git log -1 --format=%cd --date="format:%Y.%-m.%-d%H"`
 last_commit=`git log -1 --format=%H`
@@ -28,6 +18,8 @@ git show HEAD:./package.json | jq --arg nightly_version "${nightly_version}" '
 .description += " (Nightly)" |
 . + {"preview": true}' > package.json
 
+mv README.md README.md.orig
+
 cat >README.md <<EOT
 # Slint for Visual Studio Code Nightly
 
@@ -37,7 +29,9 @@ It is published a regular intervals using the latest development code, to
 preview new features and test bug fixes. This means that it can be broken
 or unstable.
 EOT
-git show HEAD:./README.md | sed '/^# Slint for Visual Studio Code$/d;/^## Building from Source$/,$d' >> README.md
+
+cat README.md.orig >> README.md
+rm README.md.orig
 
 cat > CHANGELOG.md <<EOT
 This nightly build was created from commit $last_commit

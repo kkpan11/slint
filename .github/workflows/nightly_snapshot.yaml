@@ -64,7 +64,7 @@ jobs:
     cpp_package:
         uses: ./.github/workflows/cpp_package.yaml
         with:
-            extra_cmake_flags: ${{ github.event.inputs.release && '' || '-DCPACK_PACKAGE_VERSION=nightly' }}
+            extra_cmake_flags: ${{ github.event.inputs.release != 'true' && '-DCPACK_PACKAGE_VERSION=nightly' || '' }}
 
     check-for-secrets:
         runs-on: ubuntu-latest
@@ -236,9 +236,14 @@ jobs:
         if: ${{ needs.check-for-secrets.outputs.has-openvsx-pat == 'yes' && needs.check-for-secrets.outputs.has-vscode-marketplace-pat == 'yes' }}
         steps:
             - uses: actions/checkout@v4
+            - uses: pnpm/action-setup@v4.0.0
+              with:
+                version: 9.11.0
+            - name: Install GNU Sed
+              run: brew install gnu-sed
             - uses: actions/setup-node@v4
               with:
-                  node-version: 18
+                  node-version: 20
             - uses: actions/download-artifact@v4
               with:
                   name: vscode-lsp-binary-x86_64-unknown-linux-gnu
@@ -266,12 +271,19 @@ jobs:
                   RELEASE_INPUT: ${{ github.event.inputs.release }}
               working-directory: editors/vscode
               run: |
+                  if grep -q 'lines below this marker are stripped from the release' README.md; then
+                    gsed -i "/lines below this marker are stripped from the release/,\$d" README.md
+                  else
+                    echo "Missing strip marker in VS Code Extension README. Either add or fix this script."
+                    exit 1
+                  fi
                   if [ "$RELEASE_INPUT" != "true" ]; then
                     ../../scripts/prepare_vscode_nightly.sh
                   fi
-            - name: "npm install"
+              shell: bash
+            - name: "pnpm install"
               working-directory: editors/vscode
-              run: npm clean-install
+              run: pnpm install --frozen-lockfile --ignore-scripts
             - name: Install wasm-pack
               run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
             - name: Build package and optionally publish to Visual Studio Marketplace
@@ -282,6 +294,7 @@ jobs:
                   registryUrl: https://marketplace.visualstudio.com
                   dryRun: ${{ github.event.inputs.private == 'true' || (github.ref != 'refs/heads/master' && github.event.inputs.release != 'true') }}
                   packagePath: editors/vscode
+                  dependencies: false
             - name: Publish to Open VSX Registry
               continue-on-error: true
               if: ${{ github.event.inputs.private != 'true' && (github.ref == 'refs/heads/master' || github.event.inputs.release == 'true') }}
@@ -310,7 +323,7 @@ jobs:
 
     publish_artifacts:
         if: ${{ github.event.inputs.private != 'true' }}
-        needs: [docs, wasm_demo, wasm, check-for-secrets]
+        needs: [docs, wasm_demo, wasm, check-for-secrets, android]
         runs-on: ubuntu-20.04
         steps:
             - uses: actions/download-artifact@v4
@@ -334,7 +347,7 @@ jobs:
             - name: Extract Version
               id: version
               run: |
-                version=$(grep -oP '(?<=<title>Slint )[0-9]+\.[0-9]+\.[0-9]+' target/slintdocs/html/index.html)
+                version=$(grep -oP '(?<=<p class="title logo__title">Slint )[0-9]+\.[0-9]+\.[0-9]+' target/slintdocs/html/index.html)
                 if [[ -z "$version" ]]; then
                   echo "Version not found"
                   exit 1
@@ -349,12 +362,27 @@ jobs:
                 private-key: ${{ secrets.READ_WRITE_PRIVATE_KEY }}
                 repositories: www-releases
 
-            - name: Clone www-releases directory
+            - name: Clone www-releases/releases and slintpad directory
               uses: actions/checkout@v4
+              if: ${{ github.event.inputs.release  == 'true' }}
               with:
                 repository: slint-ui/www-releases
                 path: www-releases
                 token: ${{ steps.app-token.outputs.token }}
+                sparse-checkout: |
+                  releases/versions.txt
+                  releases/versions.json
+                  slintpad
+
+            - name: Clone www-releases/snapshots directory
+              uses: actions/checkout@v4
+              if: ${{ github.event.inputs.release  != 'true' }}
+              with:
+                repository: slint-ui/www-releases
+                path: www-releases
+                token: ${{ steps.app-token.outputs.token }}
+                sparse-checkout: |
+                  snapshots
 
             - name: Publish Docs and Demos
               working-directory: ./www-releases
@@ -391,7 +419,7 @@ jobs:
                 else
                   version="development snapshot"
                 fi
-                sed -i 's/VERSION/$version/g' ../docs/site/index.html
+                sed -i "s/VERSION/$version/g" ../docs/site/index.html
 
                 rm -rf $output_path/docs
                 mkdir -p $output_path/docs
@@ -423,6 +451,28 @@ jobs:
               working-directory: www-releases/releases
               run: ls -1d */ | cut -f1 -d'/' | sort --version-sort -r > versions.txt
 
+            - name: Print contents before update
+              if: github.event.inputs.release == 'true'
+              run: cat releases/versions.json
+      
+            - name: Update version in versions.json
+              if: github.event.inputs.release == 'true'
+              run: |
+                  sed -i '/"name": "development snapshot"/,/"preferred": true,/c\
+                          "name": "development snapshot",\
+                          "url": "https://snapshots.slint.dev/master/docs"\
+                      },\
+                      {\
+                          "preferred": true,\
+                          "version": "${{ steps.version.outputs.VERSION }}",\
+                          "url": "https://releases.slint.dev/${{ steps.version.outputs.VERSION }}/docs/slint"\
+                      },\
+                      {' releases/versions.json
+      
+            - name: Print contents before update
+              if: github.event.inputs.release == 'true'
+              run: cat releases/versions.json
+            
             - name: Update SlintPad
               if: github.event.inputs.release == 'true'
               run: |
@@ -516,6 +566,7 @@ jobs:
                   if [ "$RELEASE_INPUT" != "true" ]; then
                     notes_file=slint-src/docs/_templates/nightly-release-notes.md
                     version=nightly
+                    download_version=$version
                   else
                     notes_file=slint-src/docs/_templates/release-notes.md
                     version=$(echo artifacts/Slint-cpp-*-win64-MSVC.exe | sed -nre 's/^.*-([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')
@@ -525,11 +576,12 @@ jobs:
                     fi
                     major_version=`echo $version | sed -e "s,\([0-9]*\)\.[0-9]*\.[0-9]*,\1,"`
                     minor_version=`echo $version | sed -e "s,[0-9]*\.\([0-9]*\)\.[0-9]*,\1,"`
+                    download_version=v$version
                   fi
                   echo "VERSION=$version" >> $GITHUB_OUTPUT
                   cat $notes_file slint-src/docs/_templates/release-artifacts.md > release-notes.md
                   sed -i -e "s,{version},$version,g" release-notes.md
-                  sed -i -e "s,{download_version},$version,g" release-notes.md
+                  sed -i -e "s,{download_version},$download_version,g" release-notes.md
                   sed -i -e "s,{major_version},$major_version,g" release-notes.md
                   sed -i -e "s,{minor_version},$minor_version,g" release-notes.md
                   cat release-notes.md
@@ -542,6 +594,10 @@ jobs:
                 cd slint-cpp-templates-stm32
                 if [ "$RELEASE_INPUT" = "true" ]; then
                     find . -name "CMakeLists.txt" | xargs sed -i "s/find_package(Slint)/find_package(Slint ${{ steps.version.outputs.VERSION }})/g"
+                    if ! grep -q 'find_package(Slint 1\.)' **/CMakeLists.txt; then
+                      echo "Substituting the choice of nightly Slint against the released version failed. Check this script and CMakeLists.txt"
+                      exit 1
+                    fi
                 fi
                 for board in stm32h735g-dk stm32h747i-disco; do
                     mv $board  slint-cpp-template-$board

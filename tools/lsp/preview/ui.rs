@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::{collections::HashMap, iter::once, rc::Rc};
 
-use i_slint_compiler::parser::{syntax_nodes, SyntaxKind, SyntaxNode, TextRange};
+use i_slint_compiler::parser::{syntax_nodes, SyntaxKind, TextRange};
 use i_slint_compiler::{expression_tree, langtype, literals};
 use itertools::Itertools;
 use lsp_types::Url;
@@ -29,6 +29,7 @@ pub fn create_ui(style: String, experimental: bool) -> Result<PreviewUi, Platfor
         .chain(i_slint_compiler::fileaccess::styles().iter())
         .filter(|s| s != &&"qt" || i_slint_backend_selector::HAS_NATIVE_STYLE)
         .cloned()
+        .sorted()
         .collect::<Vec<_>>();
     let style = if known_styles.contains(&style.as_str()) {
         style
@@ -299,16 +300,25 @@ fn extract_tr_data(tr_node: &syntax_nodes::AtTr, value: &mut PropertyValue) {
 }
 
 fn convert_number_literal(
-    node: &SyntaxNode,
+    node: &syntax_nodes::Expression,
 ) -> Option<(f64, i_slint_compiler::expression_tree::Unit)> {
-    let literal = node.child_text(SyntaxKind::NumberLiteral)?;
-    let expr = literals::parse_number_literal(literal).ok()?;
+    if let Some(unary) = &node.UnaryOpExpression() {
+        let factor = match unary.first_token().unwrap().text() {
+            "-" => -1.0,
+            "+" => 1.0,
+            _ => return None,
+        };
+        convert_number_literal(&unary.Expression()).map(|(v, u)| (factor * v, u))
+    } else {
+        let literal = node.child_text(SyntaxKind::NumberLiteral)?;
+        let expr = literals::parse_number_literal(literal).ok()?;
 
-    match expr {
-        i_slint_compiler::expression_tree::Expression::NumberLiteral(value, unit) => {
-            return Some((value, unit))
+        match expr {
+            i_slint_compiler::expression_tree::Expression::NumberLiteral(value, unit) => {
+                return Some((value, unit))
+            }
+            _ => None,
         }
-        _ => None,
     }
 }
 
@@ -569,17 +579,17 @@ fn map_properties_to_ui(
     let source_uri: SharedString = raw_source_uri.to_string().into();
     let source_version = properties.source_version;
 
-    let mut property_groups: HashMap<(String, usize), Vec<PropertyInformation>> = HashMap::new();
+    let mut property_groups: HashMap<(String, u32), Vec<PropertyInformation>> = HashMap::new();
 
     let mut declarations = HashMap::new();
 
     fn property_group_from(
-        groups: &mut HashMap<(String, usize), Vec<PropertyInformation>>,
+        groups: &mut HashMap<(String, u32), Vec<PropertyInformation>>,
         name: String,
-        priority: usize,
+        group_priority: u32,
         property: PropertyInformation,
     ) {
-        let entry = groups.entry((name.clone(), priority));
+        let entry = groups.entry((name.clone(), group_priority));
         entry.and_modify(|e| e.push(property.clone())).or_insert(vec![property]);
     }
 
@@ -606,11 +616,12 @@ fn map_properties_to_ui(
         property_group_from(
             &mut property_groups,
             pi.group.clone(),
-            pi.priority,
+            pi.group_priority,
             PropertyInformation {
                 name: pi.name.clone().into(),
                 type_name: pi.ty.to_string().into(),
                 value,
+                display_priority: i32::try_from(pi.priority).unwrap(),
             },
         );
     }
@@ -638,7 +649,16 @@ fn map_properties_to_ui(
             keys.iter()
                 .map(|k| PropertyGroup {
                     group_name: k.0.clone().into(),
-                    properties: Rc::new(VecModel::from(property_groups.remove(k).unwrap())).into(),
+                    properties: Rc::new(VecModel::from({
+                        let mut v = property_groups.remove(k).unwrap();
+                        v.sort_by(|a, b| match a.display_priority.cmp(&b.display_priority) {
+                            Ordering::Less => Ordering::Less,
+                            Ordering::Equal => a.name.cmp(&b.name),
+                            Ordering::Greater => Ordering::Greater,
+                        });
+                        v
+                    }))
+                    .into(),
                 })
                 .collect::<Vec<_>>(),
         ))
@@ -1054,6 +1074,20 @@ export component Test { in property <Foobar> test1; }"#,
         assert_eq!(result.value_float, 42.0);
 
         let result = property_conversion_test(
+            r#"export component Test { in property <float> test1: +42.0; }"#,
+            1,
+        );
+        assert_eq!(result.kind, PropertyValueKind::Float);
+        assert_eq!(result.value_float, 42.0);
+
+        let result = property_conversion_test(
+            r#"export component Test { in property <float> test1: -42.0; }"#,
+            1,
+        );
+        assert_eq!(result.kind, PropertyValueKind::Float);
+        assert_eq!(result.value_float, -42.0);
+
+        let result = property_conversion_test(
             r#"export component Test { in property <float> test1: 42.0 * 23.0; }"#,
             0,
         );
@@ -1074,6 +1108,20 @@ export component Test { in property <Foobar> test1; }"#,
         );
         assert_eq!(result.kind, PropertyValueKind::Integer);
         assert_eq!(result.value_int, 42);
+
+        let result = property_conversion_test(
+            r#"export component Test { in property <int> test1: +42; }"#,
+            1,
+        );
+        assert_eq!(result.kind, PropertyValueKind::Integer);
+        assert_eq!(result.value_int, 42);
+
+        let result = property_conversion_test(
+            r#"export component Test { in property <int> test1: -42; }"#,
+            1,
+        );
+        assert_eq!(result.kind, PropertyValueKind::Integer);
+        assert_eq!(result.value_int, -42);
 
         let result = property_conversion_test(
             r#"export component Test { in property <int> test1: 42 * 23; }"#,
@@ -1225,7 +1273,7 @@ export component X {
         let element = dc
             .element_at_offset(&url, (source.find("/*CURSOR*/").expect("cursor") as u32).into())
             .unwrap();
-        let pi = super::properties::get_properties(&element);
+        let pi = super::properties::get_properties(&element, super::properties::LayoutKind::None);
 
         let prop = pi.iter().find(|pi| pi.name == "visible").unwrap();
         let result = super::simplify_value(&prop);
@@ -1280,7 +1328,7 @@ export component X {
         let element = dc
             .element_at_offset(&url, (source.find("/*CURSOR*/").expect("cursor") as u32).into())
             .unwrap();
-        let pi = super::properties::get_properties(&element);
+        let pi = super::properties::get_properties(&element, super::properties::LayoutKind::None);
 
         let prop = pi.iter().find(|pi| pi.name == "visible").unwrap();
         let result = super::simplify_value(&prop);
@@ -1291,6 +1339,7 @@ export component X {
     fn create_test_property(name: &str, value: &str) -> PropertyInformation {
         PropertyInformation {
             name: name.into(),
+            display_priority: 1000,
             type_name: "Sometype".into(),
             value: PropertyValue {
                 kind: PropertyValueKind::String,

@@ -17,6 +17,7 @@ use i_slint_core::model::VecModel;
 use lsp_types::Url;
 use slint::PlatformError;
 use slint_interpreter::{ComponentDefinition, ComponentHandle, ComponentInstance};
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -121,6 +122,23 @@ pub fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
     match future.poll(&mut ctx) {
         std::task::Poll::Ready(result) => Some(result),
         std::task::Poll::Pending => None,
+    }
+}
+
+fn invalidate_contents(url: &lsp_types::Url) {
+    let component = {
+        let mut cache = CONTENT_CACHE.get_or_init(Default::default).lock().unwrap();
+
+        cache.source_code.remove(url);
+
+        (cache.dependency.contains(url) && cache.ui_is_visible)
+            .then_some(cache.current_component())
+            .flatten()
+    };
+
+    // No need to bother with the document_cache: It follows the preview state at all times!
+    if let Some(component) = component {
+        load_preview(component, LoadBehavior::Reload);
     }
 }
 
@@ -960,7 +978,7 @@ fn finish_parsing(preview_url: &Url, ok: bool) {
             let mut preview_state = preview_state.borrow_mut();
             preview_state.known_components = components;
 
-            preview_state.document_cache.borrow_mut().replace(Rc::new(document_cache));
+            preview_state.document_cache.borrow_mut().replace(Some(Rc::new(document_cache)));
 
             if let Some(ui) = &preview_state.ui {
                 ui::ui_set_uses_widgets(ui, uses_widgets);
@@ -1012,8 +1030,10 @@ fn get_path_from_cache(path: &Path) -> Option<(SourceFileVersion, String)> {
 pub enum LoadBehavior {
     /// We reload the preview, most likely because a file has changed
     Reload,
-    /// We load the preview because the user asked for it. The UI should become visible if it wasn't already
+    /// Load the preview and make the window visible if it wasn't already.
     Load,
+    /// We show the preview because the user asked for it. The UI should become visible and focused if it wasn't already
+    BringWindowToFront,
 }
 
 pub fn reload_preview() {
@@ -1038,7 +1058,9 @@ pub fn load_preview(preview_component: PreviewComponent, behavior: LoadBehavior)
                     return;
                 }
             }
-            LoadBehavior::Load => cache.set_current_component(preview_component),
+            LoadBehavior::Load | LoadBehavior::BringWindowToFront => {
+                cache.set_current_component(preview_component)
+            }
         }
 
         match cache.loading_state {
@@ -1068,7 +1090,7 @@ pub fn load_preview(preview_component: PreviewComponent, behavior: LoadBehavior)
                 cache.clear_style_of_component();
 
                 assert_eq!(cache.loading_state, PreviewFutureState::PreLoading);
-                if !cache.ui_is_visible && behavior != LoadBehavior::Load {
+                if !cache.ui_is_visible && behavior == LoadBehavior::Reload {
                     cache.loading_state = PreviewFutureState::Pending;
                     return;
                 }
@@ -1289,7 +1311,7 @@ fn set_preview_factory(
 
     let api = ui.global::<ui::Api>();
     api.set_preview_area(factory);
-    api.set_resize_to_preferred_size(behavior == LoadBehavior::Load);
+    api.set_resize_to_preferred_size(behavior != LoadBehavior::Reload);
 }
 
 /// Highlight the element pointed at the offset in the path.
@@ -1435,17 +1457,18 @@ fn set_selected_element(
     positions: &[i_slint_core::lengths::LogicalRect],
     notify_editor_about_selection_after_update: bool,
 ) {
-    let (layout_kind, is_in_layout) = selection
+    let (layout_kind, parent_layout_kind) = selection
         .as_ref()
         .and_then(|s| s.as_element_node())
-        .map(|en| (en.layout_kind(), element_selection::is_element_node_in_layout(&en)))
-        .unwrap_or((ui::LayoutKind::None, false));
+        .map(|en| (en.layout_kind(), element_selection::parent_layout_kind(&en)))
+        .unwrap_or((ui::LayoutKind::None, ui::LayoutKind::None));
 
     set_drop_mark(&None);
 
     PREVIEW_STATE.with(move |preview_state| {
         let mut preview_state = preview_state.borrow_mut();
 
+        let is_in_layout = parent_layout_kind != ui::LayoutKind::None;
         let is_layout = layout_kind != ui::LayoutKind::None;
         set_selections(
             preview_state.ui.as_ref(),
@@ -1491,10 +1514,16 @@ fn set_selected_element(
                         ))
                     })
                 {
+                    let in_layout = match parent_layout_kind {
+                        ui::LayoutKind::None => properties::LayoutKind::None,
+                        ui::LayoutKind::Horizontal => properties::LayoutKind::HorizontalBox,
+                        ui::LayoutKind::Vertical => properties::LayoutKind::VerticalBox,
+                        ui::LayoutKind::Grid => properties::LayoutKind::GridLayout,
+                    };
                     preview_state.property_range_declarations = Some(ui::ui_set_properties(
                         ui,
                         &document_cache,
-                        properties::query_properties(&uri, version, &selection).ok(),
+                        properties::query_properties(&uri, version, &selection, in_layout).ok(),
                     ));
                 }
             }
@@ -1636,7 +1665,18 @@ fn update_preview_area(
             reset_selections(ui);
         }
 
-        ui.show()
+        ui.show().and_then(|_| {
+            if matches!(behavior, LoadBehavior::BringWindowToFront) {
+                let window_inner = i_slint_core::window::WindowInner::from_pub(ui.window());
+                if let Some(window_adapter_internal) =
+                    window_inner.window_adapter().internal(i_slint_core::InternalToken)
+                {
+                    window_adapter_internal.bring_to_front()?;
+                }
+            }
+
+            Ok(())
+        })
     })?;
     element_selection::reselect_element();
     Ok(())
@@ -1645,6 +1685,7 @@ fn update_preview_area(
 pub fn lsp_to_preview_message(message: crate::common::LspToPreviewMessage) {
     use crate::common::LspToPreviewMessage as M;
     match message {
+        M::InvalidateContents { url } => invalidate_contents(&url),
         M::SetContents { url, contents } => {
             set_contents(&url, contents);
         }
@@ -1652,7 +1693,7 @@ pub fn lsp_to_preview_message(message: crate::common::LspToPreviewMessage) {
             config_changed(config);
         }
         M::ShowPreview(pc) => {
-            load_preview(pc, LoadBehavior::Load);
+            load_preview(pc, LoadBehavior::BringWindowToFront);
         }
         M::HighlightFromEditor { url, offset } => {
             highlight(url, offset.into());
